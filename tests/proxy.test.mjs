@@ -61,13 +61,43 @@ test('ping never starts backend',async()=>{
 });
 test('backend pings are answered locally without preventing idle shutdown',async()=>{
   const dir=await workspace(),p=connect(dir,{mode:'pinging'});
-  try{await p.init();await until(()=>p.stderr.includes('backend stopped'));assert.ok(!p.messages.some(m=>m.method==='ping'));assert.ok((await records(dir)).some(m=>m.event==='response'&&m.id==='health'));}
+  try{await p.init();const pid=text(await call(p,'echo',{delay:120})).pid;await until(()=>!alive(pid));assert.ok(!p.messages.some(m=>m.method==='ping'));assert.ok((await records(dir)).some(m=>m.event==='response'&&m.id==='health'));}
   finally{await p.close();}
 });
 test('stateful backend can disable idle shutdown explicitly',async()=>{
   const dir=await workspace(),p=connect(dir,{extra:['--idle-ms','0']});
   try{await p.init();const first=text(await call(p,'echo'));await delay(700);assert.ok(alive(first.pid));assert.equal(text(await call(p,'echo')).pid,first.pid);}
   finally{await p.close();}
+});
+test('discovery-only backends stop immediately regardless of cache TTL and idle=0',async()=>{
+  for(const ttl of ['0','600000']){
+    const dir=await workspace(),p=connect(dir,{extra:['--idle-ms','0','--discovery-idle-ms','60000','--cache-ttl-ms',ttl]});
+    const stopped=async()=>{
+      const pids=(await records(dir)).filter(x=>x.event==='start').map(x=>x.pid);
+      assert.ok(pids.length);await until(()=>pids.every(pid=>!alive(pid)),'discovery backend stops immediately',1500);
+    };
+    try{
+      await p.init();await stopped();await p.request('tools/list');await stopped();
+      const starts=(await records(dir)).filter(x=>x.event==='start').length;
+      await p.request('tools/list');await stopped();
+      assert.equal((await records(dir)).filter(x=>x.event==='start').length,starts+(ttl==='0'?1:0));
+      const operational=text(await call(p,'echo'));
+      await p.request('tools/list');await p.request('ping');await delay(250);
+      assert.ok(alive(operational.pid),'discovery must not terminate an operational backend');
+      assert.equal(text(await call(p,'echo')).pid,operational.pid);
+    }finally{await p.close();}
+  }
+});
+test('overlapping discovery and a real operation keep the backend alive',async()=>{
+  const dir=await workspace(),p=connect(dir,{extra:['--idle-ms','0']});
+  try{
+    await p.init();
+    const listing=p.request('tools/list',{});
+    const operation=call(p,'echo',{delay:200});
+    assert.ok((await listing).result.tools.length);
+    const result=text(await operation);await delay(250);assert.ok(alive(result.pid));
+    assert.equal(text(await call(p,'echo')).pid,result.pid);
+  }finally{await p.close();}
 });
 test('response timeout bounds a stuck request independently of idle and other replies',async()=>{
   const dir=await workspace(),p=connect(dir,{extra:['--idle-ms','80','--response-timeout-ms','600']});
@@ -95,7 +125,7 @@ test('warm cache across replicas preserves all result fields and ignores agreed 
   const dir=await workspace();let p=connect(dir),init,list;
   try{init=await p.init();list=(await p.request('tools/list')).result;}finally{await p.close();}
   p=connect(dir,{env:{PATH:process.env.PATH+';unused',INIT_CWD:'different',npm_config_test:'different',CODEX_TOOL_CALL_ID:'different'}});
-  try{assert.deepEqual(await p.init(),init);assert.deepEqual((await p.request('tools/list',{},'new-id')).result,list);assert.equal((await records(dir)).filter(x=>x.event==='start').length,1);assert.match(p.stderr,/cache hit/);}
+  try{assert.deepEqual(await p.init(),init);assert.deepEqual((await p.request('tools/list',{},'new-id')).result,list);assert.equal((await records(dir)).filter(x=>x.event==='start').length,2);assert.match(p.stderr,/cache hit/);}
   finally{await p.close();}
 });
 test('idle tree cleanup, handshake replay, concurrent replies, ping and discovery cannot shorten tool grace',async()=>{
@@ -112,7 +142,7 @@ test('idle tree cleanup, handshake replay, concurrent replies, ping and discover
     const pids=(await records(dir)).filter(x=>x.event==='start').map(x=>x.pid);
     await until(()=>pids.every(pid=>!alive(pid)),'all idle descendants exit');
     const next=text(await call(p,'echo'));assert.notEqual(next.pid,first.pid);
-    assert.equal((await records(dir)).filter(x=>x.event==='initialize').length,3);
+    assert.equal((await records(dir)).filter(x=>x.event==='initialize').length,4);
   }finally{await p.close();}
 });
 test('server requests and cancellation IDs survive proxy routing',async()=>{
@@ -154,7 +184,7 @@ test('modern discovery and tools cache preserve original discovery',{timeout:100
   const dir=await workspace();let p=connect(dir,{mode:'modern'}),discovery;
   const params={_meta:{'io.modelcontextprotocol/protocolVersion':'2026-07-28'}};
   try{discovery=(await p.request('server/discover',params)).result;await p.request('tools/list',params);}finally{await p.close();}
-  p=connect(dir,{mode:'modern'});try{assert.deepEqual((await p.request('server/discover',params)).result,discovery);await p.request('tools/list',params);assert.equal((await records(dir)).filter(x=>x.event==='start').length,1);text(await call(p,'echo'));}finally{await p.close();}
+  p=connect(dir,{mode:'modern'});try{assert.deepEqual((await p.request('server/discover',params)).result,discovery);await p.request('tools/list',params);assert.equal((await records(dir)).filter(x=>x.event==='start').length,2);text(await call(p,'echo'));}finally{await p.close();}
 });
 test('parent death shuts down proxy even when another process keeps stdin open',{skip:process.platform!=='win32'},async()=>{
   const dir=await workspace();let info,pids=[];

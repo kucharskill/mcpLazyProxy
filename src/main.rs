@@ -26,6 +26,7 @@ struct Proxy {
     config: Config,
     cache: Cache,
     backend: Option<Backend>,
+    operational: bool,
     events: mpsc::Sender<Event>,
     generation: u64,
     sequence: u64,
@@ -58,6 +59,7 @@ impl Proxy {
         self.expires = self.expires.max(Instant::now() + duration);
     }
     async fn start(&mut self, replay: bool) -> io::Result<()> {
+        self.operational = false;
         self.generation += 1;
         self.backend = Some(Backend::spawn(
             &self.config,
@@ -84,6 +86,7 @@ impl Proxy {
     }
     async fn dispatch(&mut self, mut message: Value) -> io::Result<()> {
         let method = message["method"].as_str().unwrap_or("").to_owned();
+        self.operational |= !discovery(&method);
         if let Some(id) = message.get("id").cloned() {
             self.sequence += 1;
             let wire = format!("lazy-request-{}", self.sequence);
@@ -243,6 +246,17 @@ impl Proxy {
             backend.stop(self.config.shutdown).await;
         }
     }
+    async fn stop_discovery(&mut self) {
+        if !self.operational
+            && self.backend.is_some()
+            && self.pending.is_empty()
+            && self.queue.is_empty()
+            && self.server_pending.is_empty()
+            && self.handshake.is_none()
+        {
+            self.stop().await;
+        }
+    }
     async fn fail(&mut self, reason: &str) -> io::Result<()> {
         self.stop().await;
         for (_, pending) in std::mem::take(&mut self.pending) {
@@ -277,6 +291,7 @@ async fn run(config: Config) -> io::Result<()> {
         cache: Cache::new(&config),
         config,
         backend: None,
+        operational: false,
         events: tx,
         generation: 0,
         sequence: 0,
@@ -335,7 +350,7 @@ async fn run(config: Config) -> io::Result<()> {
             _ = &mut interrupt => Ok(false),
         };
         match action {
-            Ok(true) => (),
+            Ok(true) => proxy.stop_discovery().await,
             Ok(false) => break Ok(()),
             Err(e) => break Err(e),
         }

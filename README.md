@@ -37,13 +37,13 @@ On Windows, invoke `.cmd` launchers explicitly through `cmd.exe /d /s /c` with C
 ## Behavior
 
 - Answer `ping` locally in either direction without starting or keeping the backend alive.
-- Cache successful `initialize`, `server/discover`, and `tools/list` results for 10 minutes. Use the cache while the backend is stopped; a cold cache requires a backend start.
+- Cache successful `initialize`, `server/discover`, and `tools/list` results for 10 minutes. Use the cache while the backend is stopped; a cold cache miss starts a backend. Once outstanding discovery requests finish, immediately close a backend used only for discovery, regardless of cache TTL, idle duration, or `--idle-ms 0`. A legacy initialization and a subsequent uncached tool-list request may therefore use separate backend starts, with handshake replay on the latter.
 - Preserve the entire result, including unknown fields, schemas, numeric precision, and original metadata such as `ttlMs`. The local cache TTL is a separate policy. Do not cache errors or tool execution results.
 - Key cache entries by command, arguments, working directory, sorted environment, request parameters, and initialization parameters. Exclude `PATH`, `CODEX_TOOL_CALL_ID`, `INIT_*`, and `NPM_*`, case-insensitively. Raw environment values and launch arguments are not written to disk. Because PATH is excluded, clear the cache when executable resolution changes.
 - Write cache entries atomically. Concurrent cold starts may temporarily run separate backends. There is no global lock or shared backend transport.
 - Invalidate cached tool-list pages on `notifications/tools/list_changed`. Otherwise, a stopped backend's catalog may remain stale until the cache expires.
 - Replay legacy `initialize` and `notifications/initialized` before forwarding operations to a restarted backend. Forward and cache `server/discover` as received rather than synthesizing it from a legacy handshake.
-- Maintain one idle deadline: `expires = max(expires, now + duration_for_method)`. Discovery requests grant 1 minute; other requests grant 30 minutes. Sending and completing a request update the deadline. Cache hits and pings do not. Pending requests in either direction prevent idle shutdown.
+- After a real operation has used the backend, maintain one idle deadline: `expires = max(expires, now + duration_for_method)`. Discovery requests grant 1 minute; other requests grant 30 minutes. Sending and completing a request update the deadline. Cache hits and pings do not. Pending requests in either direction prevent shutdown. Discovery never immediately terminates an operational backend; discovery-only shutdown does not wait for the idle deadline.
 - Close backend stdin on shutdown, allow a grace period, then terminate the owned process tree. Client EOF or a termination signal also shuts down the proxy.
 - On Windows, start the backend suspended and assign it to a Job Object before resuming it. Kill-on-close covers the tree even if the proxy is forcibly terminated. Failure to establish containment fails startup. A parent process handle detects parent death even if another process keeps stdin open. The proxy does not create its own console window.
 - On Unix, use a process group and SIGINT/SIGTERM handling. A hard SIGKILL of the proxy does not provide the same descendant-cleanup guarantee as Windows Job Objects. Unix support has not yet been validated.
@@ -55,7 +55,7 @@ On Windows, invoke `.cmd` launchers explicitly through `cmd.exe /d /s /c` with C
 | --- | --- | --- |
 | `--cache-dir DIR` | `<OS temp>/mcp-lazy-proxy` | Windows: `%TEMP%\mcp-lazy-proxy`; results may contain server instructions or tool descriptions |
 | `--cache-ttl-ms N` | `600000` | TTL from write time; `0` disables caching |
-| `--idle-ms N` | `1800000` | Idle allowance after operations; `0` disables all automatic idle shutdown |
+| `--idle-ms N` | `1800000` | Idle allowance after operations; `0` disables operational idle shutdown, not discovery-only cleanup |
 | `--discovery-idle-ms N` | `60000` | Idle allowance after discovery requests |
 | `--shutdown-ms N` | `2000` | Graceful shutdown allowance |
 | `--response-timeout-ms N` | `3600000` | Independent response deadline, default 1 hour |
