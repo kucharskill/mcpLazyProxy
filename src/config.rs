@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::{collections::BTreeMap, env, ffi::OsString, io, path::PathBuf, time::Duration};
 
 pub const VERSION: &str = match option_env!("MCP_LAZY_RELEASE_VERSION") {
@@ -18,11 +19,12 @@ impl Config {
     pub fn parse() -> io::Result<Option<Self>> {
         let args: Vec<_> = env::args_os().skip(1).collect();
         if args.len() == 1 && args[0] == "--version" {
-            println!("mcp-lazy-proxy {VERSION}");
+            let _ = writeln!(io::stdout(), "mcp-lazy-proxy {VERSION}");
             return Ok(None);
         }
         if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
-            println!(
+            let _ = writeln!(
+                io::stdout(),
                 "mcp-lazy-proxy [--cache-dir DIR] [--cache-ttl-ms N] [--idle-ms N]\n\
                 [--shutdown-ms N] [--response-timeout-ms N] -- COMMAND [ARGS...]\n\
                 Defaults: cache OS_TEMP/mcp-lazy-proxy, TTL 600000, idle 1800000, shutdown 2000, response timeout 3600000.\n\

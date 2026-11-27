@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {mkdir,readFile,mkdtemp,copyFile,rename,writeFile,access} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
@@ -36,6 +36,12 @@ function connect(dir,{env={},extra=[],mode='server',executable=binary}={}){
   };
 }
 const call=(p,name,args={})=>p.request('tools/call',{name,arguments:args});
+test('version is readable through a captured native process',()=>{
+  const result=spawnSync(binary,['--version'],{encoding:'utf8',windowsHide:true});
+  assert.equal(result.status,0,result.stderr);assert.equal(result.stderr,'');
+  if(process.env.MCP_LAZY_RELEASE_VERSION)assert.equal(result.stdout.trim(),'mcp-lazy-proxy '+process.env.MCP_LAZY_RELEASE_VERSION);
+  else assert.match(result.stdout.trim(),/^mcp-lazy-proxy \d+\.\d+\.\d+(?:-build\.\d+)?$/);
+});
 test('running image can be renamed and replaced; startup cleans only unused marked backups',{skip:process.platform!=='win32'},async()=>{
   const dir=await workspace(),installed=join(dir,'mcp-lazy-proxy.exe');
   const retired=join(dir,'mcp-lazy-proxy.old-0123456789abcdef0123456789abcdef.exe');
