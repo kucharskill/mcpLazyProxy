@@ -1,0 +1,22 @@
+[package]
+name = "mcp-lazy-proxy"
+version = "0.1.0"
+edition = "2024"
+description = "Small stdio MCP proxy with discovery cache and disposable backends"
+license = "MIT"
+repository = "https://github.com/kucharskill/mcpLazyProxy"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "macros", "process", "io-util", "io-std", "sync", "time", "signal"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+sha2 = "0.10"
+process-wrap = { version = "11", features = ["tokio1"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"
