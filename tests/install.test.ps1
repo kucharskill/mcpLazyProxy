@@ -28,17 +28,13 @@ try {
     if ((Get-FileHash -LiteralPath $target).Hash -ne $expected) { throw 'Blocked update damaged the installed EXE.' }
     $bad = Join-Path $testRoot 'bad'
     New-Item -ItemType Directory -Path $bad | Out-Null
-    $checksum = (Get-Content -LiteralPath (Join-Path $ReleaseDirectory 'SHA256SUMS.txt') -Raw).Trim()
-    $archiveName = ($checksum -split '\s+')[1]
-    Copy-Item -LiteralPath (Join-Path $ReleaseDirectory $archiveName) -Destination $bad
-    Set-Content -LiteralPath (Join-Path $bad 'SHA256SUMS.txt') -Value (('0' * 64) + '  ' + $archiveName) -Encoding ascii
     $failed = $false
     try { & $installer -InstallDir $installDir -ReleaseDirectory $bad | Out-Null } catch { $failed = $true }
-    if (-not $failed) { throw 'Invalid checksum was accepted.' }
-    if ((Get-FileHash -LiteralPath $target).Hash -ne $expected) { throw 'Invalid checksum changed the installed EXE.' }
+    if (-not $failed) { throw 'Missing release executable was accepted.' }
+    if ((Get-FileHash -LiteralPath $target).Hash -ne $expected) { throw 'Missing release changed the installed EXE.' }
     if (@(Get-ChildItem -LiteralPath $installDir -Filter 'mcp-lazy-proxy.new-*.exe').Count -ne 0) { throw 'Incoming EXE was not cleaned after failure.' }
     if (@(Get-ChildItem -LiteralPath $tempDir).Count -ne 0) { throw 'Installer staging files remain.' }
-    Write-Output 'Installer tests passed: install, update, locked target, checksum rejection, cleanup.'
+    Write-Output 'Installer tests passed: install, update, locked target, missing download, cleanup.'
 } finally {
     $env:TEMP = $oldTemp
     $env:TMP = $oldTmp

@@ -10,9 +10,9 @@ Install or update to the latest GitHub Release in `%LOCALAPPDATA%\Programs\mcp-l
 irm https://raw.githubusercontent.com/kucharskill/mcpLazyProxy/main/install.ps1 | iex
 ```
 
-The installer verifies SHA-256 and the ZIP allowlist, then installs the EXE without running it. It does not change PATH or MCP configuration and does not require administrator privileges. Updates rename the previous image to `mcp-lazy-proxy.old-<32-hex-ID>.exe` before replacing the stable executable path. Existing processes keep running their old image; new processes use the updated file. Each proxy startup silently removes unused backups matching that exact pattern in its own directory. Cleanup errors are ignored; locked backups are retained for a later startup without logging or blocking the proxy. Install/update and cleanup share a local file lock so cleanup cannot remove an update's rollback copy. If another application denies renaming the target, installation fails without terminating processes or replacing the target. Close the application holding the file and retry.
+The installer downloads the release executable directly and installs it without checksum comparison or a launch check. It does not change PATH or MCP configuration and does not require administrator privileges. Updates rename the previous image to `mcp-lazy-proxy.old-<32-hex-ID>.exe` before replacing the stable executable path. Existing processes keep running their old image; new processes use the updated file. Each proxy startup silently removes unused backups matching that exact pattern in its own directory. Cleanup errors are ignored; locked backups are retained for a later startup without logging or blocking the proxy. Install/update and cleanup share a local file lock so cleanup cannot remove an update's rollback copy. If another application denies renaming the target, installation fails without terminating processes or replacing the target. Close the application holding the file and retry.
 
-Download the Windows x64 ZIP from [GitHub Releases](https://github.com/kucharskill/mcpLazyProxy/releases), verify its checksum against `SHA256SUMS.txt`, and extract it. The proxy needs no Rust, Node.js, or .NET runtime. Your chosen backend still needs its own runtime and dependencies. The Windows executable is unsigned.
+Alternatively, download `mcp-lazy-proxy.exe` directly from [the latest GitHub Release](https://github.com/kucharskill/mcpLazyProxy/releases/latest/download/mcp-lazy-proxy.exe). The proxy needs no Rust, Node.js, or .NET runtime. Your chosen backend still needs its own runtime and dependencies. The Windows executable is unsigned.
 
 ```powershell
 .\mcp-lazy-proxy.exe -- node server.mjs
@@ -85,8 +85,8 @@ cargo test --locked
 cargo build --release --locked
 $env:LAZY_BINARY = "$PWD/target/release/mcp-lazy-proxy.exe"
 node --test --test-concurrency=1 tests/proxy.test.mjs
-./scripts/package.ps1
-./tests/install.test.ps1 -ReleaseDirectory .tmp/release
+$asset = ./scripts/package.ps1
+./tests/install.test.ps1 -ReleaseDirectory (Split-Path $asset)
 ```
 
 Tests use controlled process trees in `.tmp/tests`. They cover cross-process cache reuse, TTL, environment filtering, catalog pagination and invalidation, long and concurrent requests, server requests, cancellation, independent response deadlines, reconnects, backend crashes, proxy hard termination, and parent death while stdin remains open.
@@ -101,7 +101,7 @@ This test reads the MCP client configuration, performs handshake and tool discov
 
 ## Releases
 
-Every push to main runs Windows checks, tests an extracted package, and automatically publishes its executable ZIP and SHA-256 checksum to GitHub Releases. No manual tag or release step is needed. Releases use the Cargo version plus the workflow run number, for example `v0.1.0-build.1`, and point to the exact tested commit. Pull requests run the same checks without publishing. The ZIP contains only `mcp-lazy-proxy.exe`, this README, and the MIT license. Compiled executables are distributed through releases rather than committed to source control.
+Every push to main runs Windows checks, tests the release executable from a separate directory, and automatically publishes `mcp-lazy-proxy.exe` directly to GitHub Releases. No manual tag or release step is needed. Releases use the Cargo version plus the workflow run number, for example `v0.1.0-build.1`, and point to the exact tested commit. Pull requests run the same checks without publishing. The release asset is the executable itself. Documentation and the MIT license remain in the repository; there is no ZIP or checksum asset. Compiled executables are distributed through releases rather than committed to source control.
 
 ## Implementation and references
 
