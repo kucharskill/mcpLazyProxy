@@ -4,6 +4,14 @@ A small native stdio MCP proxy with discovery caching, lazy backend startup, and
 
 ## Install and run
 
+Install or update to the latest GitHub Release in `%LOCALAPPDATA%\Programs\mcp-lazy-proxy`:
+
+```powershell
+irm https://raw.githubusercontent.com/kucharskill/mcpLazyProxy/main/install.ps1 | iex
+```
+
+The installer verifies SHA-256 and the ZIP allowlist, then installs the EXE without running it. It does not change PATH or MCP configuration and does not require administrator privileges. Updates rename the previous image to `mcp-lazy-proxy.old-<32-hex-ID>.exe` before replacing the stable executable path. Existing processes keep running their old image; new processes use the updated file. Each proxy startup silently removes unused backups matching that exact pattern in its own directory. Cleanup errors are ignored; locked backups are retained for a later startup without logging or blocking the proxy. Install/update and cleanup share a local file lock so cleanup cannot remove an update's rollback copy. If another application denies renaming the target, installation fails without terminating processes or replacing the target. Close the application holding the file and retry.
+
 Download the Windows x64 ZIP from [GitHub Releases](https://github.com/kucharskill/mcpLazyProxy/releases), verify its checksum against `SHA256SUMS.txt`, and extract it. The proxy needs no Rust, Node.js, or .NET runtime. Your chosen backend still needs its own runtime and dependencies. The Windows executable is unsigned.
 
 ```powershell
@@ -45,7 +53,7 @@ On Windows, invoke `.cmd` launchers explicitly through `cmd.exe /d /s /c` with C
 
 | Option | Default | Purpose |
 | --- | --- | --- |
-| `--cache-dir DIR` | `<cwd>/.tmp/mcp-lazy-cache` | Cache location; results may contain server instructions or tool descriptions |
+| `--cache-dir DIR` | `<OS temp>/mcp-lazy-proxy` | Windows: `%TEMP%\mcp-lazy-proxy`; results may contain server instructions or tool descriptions |
 | `--cache-ttl-ms N` | `600000` | TTL from write time; `0` disables caching |
 | `--idle-ms N` | `1800000` | Idle allowance after operations; `0` disables all automatic idle shutdown |
 | `--discovery-idle-ms N` | `60000` | Idle allowance after discovery requests |
@@ -78,6 +86,7 @@ cargo build --release --locked
 $env:LAZY_BINARY = "$PWD/target/release/mcp-lazy-proxy.exe"
 node --test --test-concurrency=1 tests/proxy.test.mjs
 ./scripts/package.ps1
+./tests/install.test.ps1 -ReleaseDirectory .tmp/release
 ```
 
 Tests use controlled process trees in `.tmp/tests`. They cover cross-process cache reuse, TTL, environment filtering, catalog pagination and invalidation, long and concurrent requests, server requests, cancellation, independent response deadlines, reconnects, backend crashes, proxy hard termination, and parent death while stdin remains open.

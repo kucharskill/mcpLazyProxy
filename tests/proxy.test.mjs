@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
-import {mkdir,readFile,mkdtemp} from 'node:fs/promises';
+import {mkdir,readFile,mkdtemp,copyFile,rename,writeFile,access} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 
@@ -14,8 +14,8 @@ async function workspace(){return mkdtemp(resolve('.tmp/tests/run-'));}
 async function records(dir){try{return (await readFile(join(dir,'events.jsonl'),'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);}catch{return [];}}
 async function until(fn,message='condition',ms=5000){const end=Date.now()+ms;while(Date.now()<end){if(await fn())return;await delay(25);}throw Error('timeout: '+message);}
 function alive(pid){try{process.kill(pid,0);return true;}catch{return false;}}
-function connect(dir,{env={},extra=[],mode='server'}={}){
-  const child=spawn(binary,['--cache-dir',join(dir,'cache'),'--idle-ms','500','--discovery-idle-ms','120','--shutdown-ms','100',...extra,'--',process.execPath,fixture,join(dir,'events.jsonl'),mode],{env:{...process.env,...env},windowsHide:true});
+function connect(dir,{env={},extra=[],mode='server',executable=binary}={}){
+  const child=spawn(executable,['--cache-dir',join(dir,'cache'),'--idle-ms','500','--discovery-idle-ms','120','--shutdown-ms','100',...extra,'--',process.execPath,fixture,join(dir,'events.jsonl'),mode],{env:{...process.env,...env},windowsHide:true});
   let sequence=0,stderr='',messages=[],pending=new Map();
   child.stderr.on('data',data=>stderr+=data); child.on('error',()=>{});
   const send=m=>child.stdin.write(JSON.stringify({jsonrpc:'2.0',...m})+'\n');
@@ -36,6 +36,24 @@ function connect(dir,{env={},extra=[],mode='server'}={}){
   };
 }
 const call=(p,name,args={})=>p.request('tools/call',{name,arguments:args});
+test('running image can be renamed and replaced; startup cleans only unused marked backups',{skip:process.platform!=='win32'},async()=>{
+  const dir=await workspace(),installed=join(dir,'mcp-lazy-proxy.exe');
+  const retired=join(dir,'mcp-lazy-proxy.old-0123456789abcdef0123456789abcdef.exe');
+  const unrelated=join(dir,'mcp-lazy-proxy.old-user-file.exe');
+  await copyFile(binary,installed);await writeFile(unrelated,'keep');
+  const p=connect(dir,{executable:installed});let next;
+  try{
+    await p.request('ping');await rename(installed,retired);await copyFile(binary,installed);
+    next=connect(dir,{executable:installed});await next.request('ping');await access(retired);assert.equal(next.stderr,'','locked-backup cleanup must be silent');
+    await p.request('ping'); // Renaming/replacing the image has not interrupted the old session.
+    await p.close();await next.close();next=null;
+    next=connect(dir,{executable:installed});await next.request('ping');
+    await assert.rejects(access(retired));await access(unrelated);
+  }finally{
+    if(p.child.exitCode===null&&p.child.signalCode===null)await p.close();
+    if(next)await next.close();
+  }
+});
 function text(m){assert.ok(m.result,JSON.stringify(m));return JSON.parse(m.result.content[0].text);}
 
 test('ping never starts backend',async()=>{

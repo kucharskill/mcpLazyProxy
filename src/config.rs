@@ -17,14 +17,14 @@ impl Config {
             println!(
                 "mcp-lazy-proxy [--cache-dir DIR] [--cache-ttl-ms N] [--idle-ms N]\n\
                 [--discovery-idle-ms N] [--shutdown-ms N] [--response-timeout-ms N] -- COMMAND [ARGS...]\n\
-                Defaults: cache .tmp/mcp-lazy-cache, TTL 600000, idle 1800000, discovery 60000, shutdown 2000, response timeout 3600000.\n\
+                Defaults: cache OS_TEMP/mcp-lazy-proxy, TTL 600000, idle 1800000, discovery 60000, shutdown 2000, response timeout 3600000.\n\
                 Zero cache TTL disables caching; zero idle disables automatic idle shutdown. Logs use stderr."
             );
             return Ok(None);
         }
         let mut config = Self {
             command: Vec::new(),
-            cache_dir: env::current_dir()?.join(".tmp/mcp-lazy-cache"),
+            cache_dir: env::temp_dir().join("mcp-lazy-proxy"),
             ttl: Duration::from_secs(600),
             idle: Duration::from_secs(1800),
             discovery_idle: Duration::from_secs(60),

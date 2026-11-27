@@ -41,6 +41,7 @@ jobs:
         shell: pwsh
         run: |
           $archive = ./scripts/package.ps1 -ReleaseVersion $env:RELEASE_VERSION
+          ./tests/install.test.ps1 -ReleaseDirectory (Split-Path $archive)
           $destination = Join-Path $env:RUNNER_TEMP "mcp-lazy-proxy-$env:GITHUB_RUN_ID"
           Expand-Archive -LiteralPath $archive -DestinationPath $destination
           New-Item -ItemType Directory -Path "$destination/tests" | Out-Null

@@ -3,6 +3,7 @@
 mod backend;
 mod cache;
 mod config;
+mod install_cleanup;
 
 use backend::{Backend, Event};
 use cache::{Cache, cacheable, discovery};
@@ -344,6 +345,7 @@ async fn run(config: Config) -> io::Result<()> {
 }
 
 fn main() {
+    install_cleanup::run();
     let result = Config::parse().and_then(|config| {
         let Some(config) = config else {
             return Ok(());
