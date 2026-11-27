@@ -51,12 +51,9 @@ impl Proxy {
             .await
     }
     fn touch(&mut self, method: &str) {
-        let duration = if discovery(method) {
-            self.config.discovery_idle
-        } else {
-            self.config.idle
-        };
-        self.expires = self.expires.max(Instant::now() + duration);
+        if !discovery(method) {
+            self.expires = self.expires.max(Instant::now() + self.config.idle);
+        }
     }
     async fn start(&mut self, replay: bool) -> io::Result<()> {
         self.operational = false;
@@ -111,7 +108,6 @@ impl Proxy {
                 self.server_pending.remove(&id.to_string());
                 if self.backend.is_some() {
                     self.send(&message).await?;
-                    self.touch("server-response");
                 }
             }
             return Ok(());
@@ -235,7 +231,6 @@ impl Proxy {
         }
         if let Some(id) = message.get("id") {
             self.server_pending.insert(id.to_string(), Instant::now());
-            self.touch("server-request");
         }
         self.out(&message).await
     }

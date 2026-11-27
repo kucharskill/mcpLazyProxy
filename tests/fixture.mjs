@@ -33,9 +33,12 @@ else if(mode==='child') {
       if(name==='crash') { process.exit(9); }
       if(name==='tree') spawn(process.execPath,[import.meta.filename,log,'child'],{stdio:'ignore',windowsHide:true,detached:true});
       if(name==='roots') { rootsCall=m.id; out({id:7,method:'roots/list',params:{}}); return; }
+      if(name==='background_roots')setTimeout(()=>out({id:'background-roots',method:'roots/list',params:{}}),400);
       if(name==='changed') out({method:'notifications/tools/list_changed'});
       const timer=setTimeout(()=>{ calls.delete(m.id); out({id:m.id,result:{content:[{type:'text',text:JSON.stringify({name,pid:process.pid,args:a})}],_meta:{opaque:'keep'}}}); }, a.delay||0);
       calls.set(m.id,timer);
+    } else if(m.id==='background-roots' && !m.method) {
+      // The background callback is complete; it has no outstanding tool request.
     } else if(m.id===7 && !m.method) {
       out({id:rootsCall,result:{content:[{type:'text',text:JSON.stringify(m.result)}]}});
     } else if(m.id!==undefined) out({id:m.id,error:{code:-32601,message:'unknown'}});

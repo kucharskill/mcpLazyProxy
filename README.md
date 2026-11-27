@@ -43,7 +43,7 @@ On Windows, invoke `.cmd` launchers explicitly through `cmd.exe /d /s /c` with C
 - Write cache entries atomically. Concurrent cold starts may temporarily run separate backends. There is no global lock or shared backend transport.
 - Invalidate cached tool-list pages on `notifications/tools/list_changed`. Otherwise, a stopped backend's catalog may remain stale until the cache expires.
 - Replay legacy `initialize` and `notifications/initialized` before forwarding operations to a restarted backend. Forward and cache `server/discover` as received rather than synthesizing it from a legacy handshake.
-- After a real operation has used the backend, maintain one idle deadline: `expires = max(expires, now + duration_for_method)`. Discovery requests grant 1 minute; other requests grant 30 minutes. Sending and completing a request update the deadline. Cache hits and pings do not. Pending requests in either direction prevent shutdown. Discovery never immediately terminates an operational backend; discovery-only shutdown does not wait for the idle deadline.
+- After a real operation has used the backend, maintain one idle deadline: `expires = max(expires, now + idle_duration)`. Sending and completing a real client request update the deadline; discovery, cache hits, pings and background server callbacks do not. Pending requests in either direction prevent shutdown. Discovery never immediately terminates an operational backend; discovery-only shutdown does not wait for the idle deadline.
 - Close backend stdin on shutdown, allow a grace period, then terminate the owned process tree. Client EOF or a termination signal also shuts down the proxy.
 - On Windows, start the backend suspended and assign it to a Job Object before resuming it. Kill-on-close covers the tree even if the proxy is forcibly terminated. Failure to establish containment fails startup. A parent process handle detects parent death even if another process keeps stdin open. The proxy does not create its own console window.
 - On Unix, use a process group and SIGINT/SIGTERM handling. A hard SIGKILL of the proxy does not provide the same descendant-cleanup guarantee as Windows Job Objects. Unix support has not yet been validated.
@@ -56,7 +56,7 @@ On Windows, invoke `.cmd` launchers explicitly through `cmd.exe /d /s /c` with C
 | `--cache-dir DIR` | `<OS temp>/mcp-lazy-proxy` | Windows: `%TEMP%\mcp-lazy-proxy`; results may contain server instructions or tool descriptions |
 | `--cache-ttl-ms N` | `600000` | TTL from write time; `0` disables caching |
 | `--idle-ms N` | `1800000` | Idle allowance after operations; `0` disables operational idle shutdown, not discovery-only cleanup |
-| `--discovery-idle-ms N` | `60000` | Idle allowance after discovery requests |
+| `--discovery-idle-ms N` | ignored | Accepted for compatibility; discovery never extends the idle deadline |
 | `--shutdown-ms N` | `2000` | Graceful shutdown allowance |
 | `--response-timeout-ms N` | `3600000` | Independent response deadline, default 1 hour |
 

@@ -5,7 +5,6 @@ pub struct Config {
     pub cache_dir: PathBuf,
     pub ttl: Duration,
     pub idle: Duration,
-    pub discovery_idle: Duration,
     pub shutdown: Duration,
     pub response_timeout: Duration,
 }
@@ -16,8 +15,8 @@ impl Config {
         if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
             println!(
                 "mcp-lazy-proxy [--cache-dir DIR] [--cache-ttl-ms N] [--idle-ms N]\n\
-                [--discovery-idle-ms N] [--shutdown-ms N] [--response-timeout-ms N] -- COMMAND [ARGS...]\n\
-                Defaults: cache OS_TEMP/mcp-lazy-proxy, TTL 600000, idle 1800000, discovery 60000, shutdown 2000, response timeout 3600000.\n\
+                [--shutdown-ms N] [--response-timeout-ms N] -- COMMAND [ARGS...]\n\
+                Defaults: cache OS_TEMP/mcp-lazy-proxy, TTL 600000, idle 1800000, shutdown 2000, response timeout 3600000.\n\
                 Zero cache TTL disables caching; zero idle disables automatic idle shutdown. Logs use stderr."
             );
             return Ok(None);
@@ -27,7 +26,6 @@ impl Config {
             cache_dir: env::temp_dir().join("mcp-lazy-proxy"),
             ttl: Duration::from_secs(600),
             idle: Duration::from_secs(1800),
-            discovery_idle: Duration::from_secs(60),
             shutdown: Duration::from_secs(2),
             response_timeout: Duration::from_secs(3600),
         };
@@ -56,7 +54,8 @@ impl Config {
                 match option {
                     "--cache-ttl-ms" => config.ttl = duration,
                     "--idle-ms" => config.idle = duration,
-                    "--discovery-idle-ms" => config.discovery_idle = duration,
+                    // Accepted for older configurations; discovery no longer changes idle lifetime.
+                    "--discovery-idle-ms" => (),
                     "--shutdown-ms" => config.shutdown = duration,
                     "--response-timeout-ms" => config.response_timeout = duration,
                     _ => return Err(invalid("unknown option; use --help")),

@@ -99,6 +99,23 @@ test('overlapping discovery and a real operation keep the backend alive',async()
     assert.equal(text(await call(p,'echo')).pid,result.pid);
   }finally{await p.close();}
 });
+test('discovery and pings cannot renew the idle deadline after a real response',async()=>{
+  const dir=await workspace(),p=connect(dir,{extra:['--idle-ms','600','--discovery-idle-ms','5000']});
+  try{
+    await p.init();const result=text(await call(p,'echo'));await delay(350);
+    await p.request('tools/list');await p.request('ping');
+    assert.ok(alive(result.pid),'discovery must not immediately terminate an operational backend');
+    await until(()=>!alive(result.pid),'original real-operation idle deadline',600);
+  }finally{await p.close();}
+});
+test('background server callbacks protect pending work but do not renew client-operation idle',async()=>{
+  const dir=await workspace(),p=connect(dir,{extra:['--idle-ms','800']});
+  try{
+    await p.init();const result=text(await call(p,'background_roots'));await delay(500);
+    assert.ok((await records(dir)).some(m=>m.event==='response'&&m.id==='background-roots'));
+    await until(()=>!alive(result.pid),'idle counted from the last real client response',650);
+  }finally{await p.close();}
+});
 test('response timeout bounds a stuck request independently of idle and other replies',async()=>{
   const dir=await workspace(),p=connect(dir,{extra:['--idle-ms','80','--response-timeout-ms','600']});
   try{
