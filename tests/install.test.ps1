@@ -14,6 +14,8 @@ try {
     & $installer -InstallDir $installDir -ReleaseDirectory $ReleaseDirectory | Out-Null
     $target = Join-Path $installDir 'mcp-lazy-proxy.exe'
     if (-not (Test-Path -LiteralPath $target)) { throw 'Initial installation did not create EXE.' }
+    $state = Get-Content -LiteralPath (Join-Path $installDir 'installed-release.json') -Raw | ConvertFrom-Json
+    if (([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $state.installedAtUnix) -gt 60) { throw 'Installer did not record a fresh installation time.' }
     $expected = (Get-FileHash -LiteralPath $target).Hash
     & $installer -InstallDir $installDir -ReleaseDirectory $ReleaseDirectory | Out-Null
     if ((Get-FileHash -LiteralPath $target).Hash -ne $expected) { throw 'Update changed executable contents.' }

@@ -27,6 +27,7 @@ jobs:
           $version = [regex]::Match($manifest, '(?m)^version = "([0-9]+\.[0-9]+\.[0-9]+)"$').Groups[1].Value
           if (-not $version) { throw 'Missing package version.' }
           "RELEASE_VERSION=$version-build.$env:GITHUB_RUN_NUMBER" >> $env:GITHUB_ENV
+          "MCP_LAZY_RELEASE_VERSION=$version-build.$env:GITHUB_RUN_NUMBER" >> $env:GITHUB_ENV
       - run: cargo +stable fmt --check
       - run: cargo +stable clippy --all-targets --locked -- -D warnings
       - run: cargo +stable test --locked
@@ -35,6 +36,8 @@ jobs:
         shell: pwsh
         run: |
           $env:LAZY_BINARY = "$PWD/target/release/mcp-lazy-proxy.exe"
+          $actualVersion = & $env:LAZY_BINARY --version
+          if ($actualVersion -ne "mcp-lazy-proxy $env:RELEASE_VERSION") { throw 'Embedded release version mismatch.' }
           node --test --test-concurrency=1 tests/proxy.test.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Prepare and test release executable

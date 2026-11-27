@@ -4,6 +4,8 @@ mod backend;
 mod cache;
 mod config;
 mod install_cleanup;
+#[cfg(windows)]
+mod update;
 
 use backend::{Backend, Event};
 use cache::{Cache, cacheable, discovery};
@@ -360,6 +362,8 @@ fn main() {
         let Some(config) = config else {
             return Ok(());
         };
+        #[cfg(windows)]
+        let _update = update::start();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;

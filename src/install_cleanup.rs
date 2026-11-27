@@ -1,9 +1,6 @@
 #[cfg(windows)]
 pub fn run() {
-    use std::{
-        fs::{self, OpenOptions},
-        os::windows::fs::OpenOptionsExt,
-    };
+    use std::fs;
     let Ok(executable) = std::env::current_exe() else {
         return;
     };
@@ -11,13 +8,7 @@ pub fn run() {
         return;
     };
     // Coordinate with the installer so a rollback copy cannot disappear during a swap.
-    let Ok(_lock) = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .share_mode(0)
-        .open(directory.join(".mcp-lazy-proxy-install.lock"))
-    else {
+    let Ok(_lock) = lock(directory) else {
         return;
     };
     let Ok(entries) = fs::read_dir(directory) else {
@@ -31,11 +22,29 @@ pub fn run() {
         let Some(name) = name.to_str() else {
             continue;
         };
-        if retired_name(name) {
+        if retired_name(name) || staging_name(name) {
             // Mapped/locked images remain until a later startup. Never terminate their processes.
             let _ = fs::remove_file(entry.path());
         }
     }
+}
+
+#[cfg(windows)]
+pub fn lock(directory: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt};
+    OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .share_mode(0)
+        .open(directory.join(".mcp-lazy-proxy-install.lock"))
+}
+
+#[cfg(any(windows, test))]
+fn staging_name(name: &str) -> bool {
+    name.strip_prefix("mcp-lazy-proxy.new-")
+        .and_then(|name| name.strip_suffix(".exe"))
+        .is_some_and(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
 #[cfg(any(windows, test))]
@@ -53,6 +62,9 @@ mod tests {
     use super::*;
     #[test]
     fn cleanup_accepts_only_exact_installer_backup_names() {
+        assert!(staging_name(
+            "mcp-lazy-proxy.new-0123456789abcdef0123456789abcdef.exe"
+        ));
         assert!(retired_name(
             "mcp-lazy-proxy.old-0123456789abcdef0123456789abcdef.exe"
         ));

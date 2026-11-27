@@ -30,6 +30,13 @@ try {
         if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $target)) { [IO.File]::Move($backup, $target) }
         throw
     }
+    $state = @{
+        tag = if ($ReleaseDirectory) { $null } else { $release.tag_name }
+        releaseId = if ($ReleaseDirectory) { $null } else { $release.id }
+        installedAtUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        lastCheckedAtUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    }
+    [IO.File]::WriteAllText((Join-Path $InstallDir 'installed-release.json'), ($state | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
     Write-Output "Installed: $target"
     Write-Output 'Existing sessions keep their current version. New sessions use the installed version.'
 } finally {

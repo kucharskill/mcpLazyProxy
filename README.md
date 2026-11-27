@@ -45,6 +45,7 @@ Or [download the Windows x64 executable](https://github.com/kucharskill/mcpLazyP
 ```powershell
 .\mcp-lazy-proxy.exe -- node server.mjs
 .\mcp-lazy-proxy.exe -- uvx example-mcp
+.\mcp-lazy-proxy.exe --version
 ```
 
 Put the proxy in the MCP client's `command` field and move the original command and arguments after `--`. Retain the server's environment and working directory:
@@ -63,6 +64,14 @@ Put the proxy in the MCP client's `command` field and move the original command 
 For Windows `.cmd` launchers, use `cmd.exe /d /s /c` with quoting appropriate for the backend command.
 
 The installer downloads the EXE and replaces the stable executable path. Running sessions keep their current image; later starts use the updated version. Retired files use `mcp-lazy-proxy.old-<32-hex-ID>.exe`, and startup silently removes those that Windows allows it to delete. Installation and cleanup coordinate through an exclusive file lock. If another application holds a file lock that blocks replacement, close that application and retry the installation.
+
+### Automatic updates on Windows
+
+Each proxy start makes one background update attempt. An installation younger than 10 minutes is kept as-is. A timestamp shared by the installed copies also spaces attempts at least 10 minutes apart across process starts. A long-running proxy performs this check once, at startup.
+
+The updater uses Windows WinHTTP to query the latest GitHub Release and downloads `mcp-lazy-proxy.exe` only when its version is newer. It compares the numeric Cargo version and build number embedded in the EXE, together with the installed release record. Downloads go to a temporary filename beside the installed EXE, followed by the same rename-and-replace procedure used by the installer. Running sessions continue on their existing image; new sessions use the installed update.
+
+The installer, startup cleanup, and updater share an exclusive file lock. A process that finds the lock busy immediately continues serving MCP. Update errors are silent. The installation record is `installed-release.json` beside the EXE, with the release tag, release ID, installation time and last attempt time. The record also protects a fresh manual installation from being updated during its first 10 minutes.
 
 ## Cache and lifetime
 

@@ -1,5 +1,10 @@
 use std::{collections::BTreeMap, env, ffi::OsString, io, path::PathBuf, time::Duration};
 
+pub const VERSION: &str = match option_env!("MCP_LAZY_RELEASE_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 pub struct Config {
     pub command: Vec<OsString>,
     pub cache_dir: PathBuf,
@@ -12,6 +17,10 @@ pub struct Config {
 impl Config {
     pub fn parse() -> io::Result<Option<Self>> {
         let args: Vec<_> = env::args_os().skip(1).collect();
+        if args.len() == 1 && args[0] == "--version" {
+            println!("mcp-lazy-proxy {VERSION}");
+            return Ok(None);
+        }
         if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
             println!(
                 "mcp-lazy-proxy [--cache-dir DIR] [--cache-ttl-ms N] [--idle-ms N]\n\
