@@ -1,25 +1,53 @@
 # mcp-lazy-proxy
 
-A small native stdio MCP proxy with discovery caching, lazy backend startup, and idle process-tree cleanup. One executable, no daemon or HTTP service.
+Keep MCP tools available while releasing their backend processes between uses. This small native Rust proxy caches discovery responses, starts servers for live requests, and cleans up their process trees when work is finished.
+
+## Why this exists
+
+Opening chats, windows, and subagents can multiply MCP runtimes. Servers started to list their tools may then stay resident for the rest of the session. A separate cleanup problem appears when a launcher exits while its children keep running, consuming memory and sometimes holding ports or database locks.
+
+These problems have been reported across popular agent applications:
+
+| Application | Reported behavior | Source |
+| --- | --- | --- |
+| Codex | Duplicate MCP process trees accumulate across sessions; terminating a launcher misses descendants on Windows | [openai/codex #34614](https://github.com/openai/codex/issues/34614) |
+| Codex | Local stdio MCP servers are repeatedly spawned and retained within one task | [openai/codex #38754](https://github.com/openai/codex/issues/38754) |
+| Cursor | Reloading or restarting leaves orphan MCP processes, increasing memory use and keeping ports occupied on macOS | [Cursor community report](https://forum.cursor.com/t/mcp-process-leak-orphaned-children-on-restart/156478) |
+| Claude Code | MCP children accumulate after session exit on Windows | [anthropics/claude-code #58918](https://github.com/anthropics/claude-code/issues/58918) |
+| MCP TypeScript SDK | Closing stdio terminates the immediate child while descendants launched through tools such as npx or uvx survive | [typescript-sdk #2023](https://github.com/modelcontextprotocol/typescript-sdk/issues/2023) |
+
+The reports describe particular versions and environments. They provide concrete examples of the two lifecycle problems this project addresses: **keeping unused backends resident** and **leaving descendants behind during shutdown**. Windows x64 is the tested release target; the Cursor report illustrates the same broader cleanup problem on macOS.
+
+## What changes with the proxy
+
+| Situation | Proxy behavior |
+| --- | --- |
+| A client asks for a catalog already fetched by another process | Serve the cached response from a shared directory in the user's temporary folder |
+| A cold discovery request starts a backend | Fetch its response, cache successful metadata, and close the discovery-only backend as soon as outstanding requests finish |
+| Client or server sends a ping | Answer locally, leaving the backend lifecycle unchanged |
+| A tool is called | Start the backend, complete its handshake, and forward the live request |
+| Work finishes | Keep the backend for the configured idle period, then close its process tree |
+| Client exits or the proxy is killed | Clean up the owned backend tree using Windows Job Objects |
+| A request stops responding | Apply an independent response deadline, return an error, and clean up the backend |
+
+The client keeps its connection to the lightweight proxy while the heavier backend comes and goes. Each proxy instance owns its backend processes; discovery responses are shared through the disk cache. Concurrent cold misses may briefly start separate backends.
 
 ## Install and run
 
-Install or update to the latest GitHub Release in `%LOCALAPPDATA%\Programs\mcp-lazy-proxy`:
+Install or update the latest release to `%LOCALAPPDATA%\Programs\mcp-lazy-proxy`:
 
 ```powershell
 irm https://raw.githubusercontent.com/kucharskill/mcpLazyProxy/main/install.ps1 | iex
 ```
 
-The installer downloads the release executable directly and installs it without checksum comparison or a launch check. It does not change PATH or MCP configuration and does not require administrator privileges. Updates rename the previous image to `mcp-lazy-proxy.old-<32-hex-ID>.exe` before replacing the stable executable path. Existing processes keep running their old image; new processes use the updated file. Each proxy startup silently removes unused backups matching that exact pattern in its own directory. Cleanup errors are ignored; locked backups are retained for a later startup without logging or blocking the proxy. Install/update and cleanup share a local file lock so cleanup cannot remove an update's rollback copy. If another application denies renaming the target, installation fails without terminating processes or replacing the target. Close the application holding the file and retry.
-
-Alternatively, download `mcp-lazy-proxy.exe` directly from [the latest GitHub Release](https://github.com/kucharskill/mcpLazyProxy/releases/latest/download/mcp-lazy-proxy.exe). The proxy needs no Rust, Node.js, or .NET runtime. Your chosen backend still needs its own runtime and dependencies. The Windows executable is unsigned.
+Or [download the Windows x64 executable](https://github.com/kucharskill/mcpLazyProxy/releases/latest/download/mcp-lazy-proxy.exe) directly. It is a standalone native binary; install the runtime required by your chosen backend, such as Node.js or Python, separately.
 
 ```powershell
 .\mcp-lazy-proxy.exe -- node server.mjs
 .\mcp-lazy-proxy.exe -- uvx example-mcp
 ```
 
-For an MCP client, replace the original command with the proxy executable and put the original command and arguments after `--`. Keep the original environment and working directory. Example configuration:
+Put the proxy in the MCP client's `command` field and move the original command and arguments after `--`. Retain the server's environment and working directory:
 
 ```json
 {
@@ -32,51 +60,45 @@ For an MCP client, replace the original command with the proxy executable and pu
 }
 ```
 
-On Windows, invoke `.cmd` launchers explicitly through `cmd.exe /d /s /c` with CMD quoting appropriate for the backend. The proxy forwards an argument vector; it does not assemble a shell script. It makes no external network requests itself. Backend services may have their own network access or costs.
+For Windows `.cmd` launchers, use `cmd.exe /d /s /c` with quoting appropriate for the backend command.
 
-## Behavior
+The installer downloads the EXE and replaces the stable executable path. Running sessions keep their current image; later starts use the updated version. Retired files use `mcp-lazy-proxy.old-<32-hex-ID>.exe`, and startup silently removes those that Windows allows it to delete. Installation and cleanup coordinate through an exclusive file lock. If another application holds a file lock that blocks replacement, close that application and retry the installation.
 
-- Answer `ping` locally in either direction without starting or keeping the backend alive.
-- Cache successful `initialize`, `server/discover`, and `tools/list` results for 10 minutes. Use the cache while the backend is stopped; a cold cache miss starts a backend. Once outstanding discovery requests finish, immediately close a backend used only for discovery, regardless of cache TTL, idle duration, or `--idle-ms 0`. A legacy initialization and a subsequent uncached tool-list request may therefore use separate backend starts, with handshake replay on the latter.
-- Preserve the entire result, including unknown fields, schemas, numeric precision, and original metadata such as `ttlMs`. The local cache TTL is a separate policy. Do not cache errors or tool execution results.
-- Key cache entries by command, arguments, working directory, sorted environment, request parameters, and initialization parameters. Exclude `PATH`, `CODEX_TOOL_CALL_ID`, `INIT_*`, and `NPM_*`, case-insensitively. Raw environment values and launch arguments are not written to disk. Because PATH is excluded, clear the cache when executable resolution changes.
-- Write cache entries atomically. Concurrent cold starts may temporarily run separate backends. There is no global lock or shared backend transport.
-- Invalidate cached tool-list pages on `notifications/tools/list_changed`. Otherwise, a stopped backend's catalog may remain stale until the cache expires.
-- Replay legacy `initialize` and `notifications/initialized` before forwarding operations to a restarted backend. Forward and cache `server/discover` as received rather than synthesizing it from a legacy handshake.
-- After a real operation has used the backend, maintain one idle deadline: `expires = max(expires, now + idle_duration)`. Sending and completing a real client request update the deadline; discovery, cache hits, pings and background server callbacks do not. Pending requests in either direction prevent shutdown. Discovery never immediately terminates an operational backend; discovery-only shutdown does not wait for the idle deadline.
-- Close backend stdin on shutdown, allow a grace period, then terminate the owned process tree. Client EOF or a termination signal also shuts down the proxy.
-- On Windows, start the backend suspended and assign it to a Job Object before resuming it. Kill-on-close covers the tree even if the proxy is forcibly terminated. Failure to establish containment fails startup. A parent process handle detects parent death even if another process keeps stdin open. The proxy does not create its own console window.
-- On Unix, use a process group and SIGINT/SIGTERM handling. A hard SIGKILL of the proxy does not provide the same descendant-cleanup guarantee as Windows Job Objects. Unix support has not yet been validated.
-- If the backend fails, return errors for outstanding requests without automatically retrying operations of unknown outcome. A later explicit request can start a new backend.
+## Cache and lifetime
+
+Successful `initialize`, `server/discover`, and `tools/list` results are cached for **10 minutes**. The cache preserves their full results, including schemas, extension fields, numeric precision, and server metadata such as `ttlMs`. The local cache TTL is configured independently. Tool execution requests go to the live backend.
+
+Cache identity includes the backend command, arguments, working directory, sorted environment, request parameters, and initialization parameters. Session noise is filtered case-insensitively: `PATH`, `CODEX_TOOL_CALL_ID`, `INIT_*`, and `NPM_*`. Cache filenames use hashes of the launch context; files contain the metadata responses. Clear the cache when a PATH change resolves the same command to a different executable. A server's `notifications/tools/list_changed` invalidates cached catalog pages.
+
+**Discovery-only backends close immediately after their outstanding requests finish.** This applies with any cache TTL and also with `--idle-ms 0`. Separate cold legacy initialization and tool-list requests may each start a backend; the proxy replays the handshake as needed.
+
+After a real client operation, the default idle allowance is **30 minutes**, renewed when the request is sent and when its response arrives. Discovery, pings, and background server callbacks leave that deadline unchanged. Pending requests in either direction protect the process until their responses or deadlines arrive.
+
+Shutdown closes backend stdin, allows a grace period, and then terminates the process tree. On Windows, the backend joins a Job Object before it starts executing. Closing the last job handle cleans up its descendants, including after abrupt proxy termination. A handle to the parent process also detects client death when inherited pipes remain open elsewhere.
+
+Each request has a separate **1-hour response timeout**. A timeout ends the backend and returns error `-32000` to outstanding client requests, including concurrent operations. Their effects may already have happened, so the client receives the error and decides how to proceed. A later request can start a fresh backend.
 
 ## Options
 
 | Option | Default | Purpose |
 | --- | --- | --- |
-| `--cache-dir DIR` | `<OS temp>/mcp-lazy-proxy` | Windows: `%TEMP%\mcp-lazy-proxy`; results may contain server instructions or tool descriptions |
-| `--cache-ttl-ms N` | `600000` | TTL from write time; `0` disables caching |
-| `--idle-ms N` | `1800000` | Idle allowance after operations; `0` disables operational idle shutdown, not discovery-only cleanup |
-| `--discovery-idle-ms N` | ignored | Accepted for compatibility; discovery never extends the idle deadline |
-| `--shutdown-ms N` | `2000` | Graceful shutdown allowance |
-| `--response-timeout-ms N` | `3600000` | Independent response deadline, default 1 hour |
+| `--cache-dir DIR` | `<OS temp>/mcp-lazy-proxy` | Discovery cache location; Windows uses the user's `%TEMP%` |
+| `--cache-ttl-ms N` | `600000` | Metadata lifetime from write time; `0` requests fresh metadata each time |
+| `--idle-ms N` | `1800000` | Backend idle allowance after real operations; `0` retains it until the client exits or a failure occurs |
+| `--shutdown-ms N` | `2000` | Graceful shutdown allowance before forced tree cleanup |
+| `--response-timeout-ms N` | `3600000` | Independent deadline for each forwarded request |
 
-Durations are milliseconds, at most 86400000. Only cache TTL and idle may be zero. Backend initialization and writes to its stdin have 30-second limits.
+Durations are milliseconds, up to 86400000. Cache TTL and idle accept zero. Initialization and writes to backend stdin have 30-second limits. Response deadlines are checked approximately every 50 ms, with process cleanup time added before errors are returned. Proxy diagnostics use stderr; backend stderr is inherited.
 
-Each forwarded request has its own response deadline, including server requests to the client. Other responses, pings, and notifications do not renew it. It applies even with idle shutdown disabled. If a deadline expires, stop the entire backend and return error `-32000` to outstanding client requests. This also interrupts concurrent operations, whose outcomes may be unknown. The proxy stays available and does not retry automatically. Deadlines are checked approximately every 50 ms; process cleanup adds the shutdown grace period. Requests queued during handshake use its separate initialization deadline.
+### Choosing an idle period for stateful tools
 
-Up to 256 client requests may be outstanding. Proxy diagnostics go to stderr and contain event types, methods, and PIDs, without parameters. Backend stderr is inherited unchanged. Cache files and test reports are local outputs, not release assets.
+Application state held in backend RAM lasts for that process's lifetime. For an editor or another workflow that relies on an in-memory session, choose a retention period that fits the work and save persistent state before it expires. For example, `--idle-ms 10800000` keeps the backend for three hours after the last real response. Use `--idle-ms 0` when the session should last until the client disconnects. Discovery-only processes still close immediately.
 
-## State and compatibility
-
-Restarting a backend replays the handshake, **not application state**. Use `--idle-ms 0` for backends holding unsaved documents, active subscriptions, tasks that outlive their responses, or process-bound session identifiers. If the handshake or catalog itself contains transient session data, also use `--cache-ttl-ms 0`.
-
-This matters for headless document editors: discovery tests do not establish that an edited document survives backend shutdown. Bridges to an independently running application need their own reconnection tests. Cleanup targets only the proxy's owned process tree; it does not search for applications by name.
-
-The initial scope is JSON-RPC 2.0 over JSON Lines, without batches or legacy Content-Length framing. Protocol extensions and client-specific session contexts need compatibility tests.
+For process-bound identifiers inside a handshake or tool catalog, use `--cache-ttl-ms 0` to retrieve fresh metadata. Bridges to a separate desktop application should be checked for successful reconnection to that application's existing state.
 
 ## Build and test
 
-Build prerequisites: a stable Rust toolchain with the native platform linker, rustfmt, and Clippy. The integration tests use Node.js 24 and no npm dependencies.
+The tested setup is Windows x64, a stable Rust toolchain with its native linker, rustfmt, Clippy, and Node.js 24 for the integration suite. The transport uses JSON-RPC 2.0 over JSON Lines. The Unix process-group implementation is experimental.
 
 ```powershell
 cargo fmt --check
@@ -89,22 +111,10 @@ $asset = ./scripts/package.ps1
 ./tests/install.test.ps1 -ReleaseDirectory (Split-Path $asset)
 ```
 
-Tests use controlled process trees in `.tmp/tests`. They cover cross-process cache reuse, TTL, environment filtering, catalog pagination and invalidation, long and concurrent requests, server requests, cancellation, independent response deadlines, reconnects, backend crashes, proxy hard termination, and parent death while stdin remains open.
+The controlled tests cover cache reuse across replicas, cold discovery cleanup, catalog invalidation, idle deadlines, overlapping requests, cancellation, server callbacks, response timeouts, reconnects, hot executable replacement, parent death, and process-tree cleanup after forced termination. Local integration checks have also exercised discovery against eM Client, AniCraft, EffectCraft, PhotoCraft, and WordCraft.
 
-Optional Windows compatibility checks use existing local MCP launch configurations for eM Client, AniCraft, and WordCraft:
+## Releases and implementation
 
-```powershell
-uv run --no-project --with psutil tests/real.py
-```
+Every push to `main` runs Windows checks, tests the staged executable from a separate directory, and publishes it automatically to [GitHub Releases](https://github.com/kucharskill/mcpLazyProxy/releases). Release names combine the Cargo version with the workflow run number, such as `v0.1.4-build.5`, and identify the tested commit. The installer always selects the latest published release. Documentation and the MIT license live in this repository.
 
-This test reads the MCP client configuration, performs handshake and tool discovery, compares cold and warm caches, measures memory, and sends an intentionally unknown method to test wake-up and a second idle cycle. It does not change configuration, messages, or documents. Each run creates a fresh cache and writes `.tmp/real-smoke.json`. These local integrations are not required for CI.
-
-## Releases
-
-Every push to main runs Windows checks, tests the release executable from a separate directory, and automatically publishes `mcp-lazy-proxy.exe` directly to GitHub Releases. No manual tag or release step is needed. Releases use the Cargo version plus the workflow run number, for example `v0.1.0-build.1`, and point to the exact tested commit. Pull requests run the same checks without publishing. The release asset is the executable itself. Documentation and the MIT license remain in the repository; there is no ZIP or checksum asset. Compiled executables are distributed through releases rather than committed to source control.
-
-## Implementation and references
-
-Four Rust modules: `main.rs` handles routing and session lifecycle, `backend.rs` manages processes, `cache.rs` handles disk caching, and `config.rs` handles CLI options and launch identity. Tokio provides asynchronous I/O, `process-wrap` provides OS process-tree management, and `serde_json` preserves extensible JSON messages. A full typed MCP SDK is not needed for this forwarding scope.
-
-Design references: [tkukushkin/lazy-mcp](https://github.com/tkukushkin/lazy-mcp), [xz-dev/dsh-lazy-mcp](https://github.com/xz-dev/dsh-lazy-mcp), and [sleticalboy/lazy-mcp-wrapper](https://github.com/sleticalboy/lazy-mcp-wrapper). This implementation does not copy their source. Process management references: [process-wrap](https://docs.rs/process-wrap/latest/process_wrap/) and [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).
+Rust and Tokio handle the proxy and asynchronous I/O. `process-wrap` supplies process-tree management, and `serde_json` preserves extensible JSON messages. Design references include [tkukushkin/lazy-mcp](https://github.com/tkukushkin/lazy-mcp), [xz-dev/dsh-lazy-mcp](https://github.com/xz-dev/dsh-lazy-mcp), and [sleticalboy/lazy-mcp-wrapper](https://github.com/sleticalboy/lazy-mcp-wrapper). Process management references: [process-wrap](https://docs.rs/process-wrap/latest/process_wrap/) and [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).
