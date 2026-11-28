@@ -19,6 +19,8 @@ use tokio::{
     time::{Instant, interval},
 };
 
+const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
+
 struct Pending {
     id: Value,
     method: String,
@@ -71,7 +73,7 @@ impl Proxy {
         self.expires = Instant::now();
         if replay && !self.initialize.is_null() {
             let id = format!("lazy-init-{}", self.generation);
-            self.handshake = Some((id.clone(), Instant::now() + Duration::from_secs(30)));
+            self.handshake = Some((id.clone(), Instant::now() + INITIALIZE_TIMEOUT));
             self.send(
                 &json!({"jsonrpc":"2.0","id":id,"method":"initialize","params":self.initialize}),
             )
@@ -343,7 +345,7 @@ async fn run(config: Config) -> io::Result<()> {
             },
             _ = tick.tick() => {
                 if proxy.handshake.as_ref().is_some_and(|(_, deadline)| Instant::now() >= *deadline)
-                    || proxy.pending.values().any(|p| p.method == "initialize" && p.started.elapsed() >= Duration::from_secs(30)) {
+                    || proxy.pending.values().any(|p| p.method == "initialize" && p.started.elapsed() >= INITIALIZE_TIMEOUT) {
                     proxy.fail("MCP backend initialization timed out").await.map(|_| true)
                 } else if proxy.pending.values().any(|p| p.started.elapsed() >= proxy.config.response_timeout)
                     || proxy.server_pending.values().any(|started| started.elapsed() >= proxy.config.response_timeout) {

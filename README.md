@@ -97,7 +97,7 @@ Each request has a separate **1-hour response timeout**. A timeout ends the back
 | `--shutdown-ms N` | `2000` | Graceful shutdown allowance before forced tree cleanup |
 | `--response-timeout-ms N` | `3600000` | Independent deadline for each forwarded request |
 
-Durations are milliseconds, up to 86400000. Cache TTL and idle accept zero. Initialization and writes to backend stdin have 30-second limits. Response deadlines are checked approximately every 50 ms, with process cleanup time added before errors are returned. Proxy diagnostics use stderr; backend stderr is inherited.
+Durations are milliseconds, up to 86400000. Cache TTL and idle accept zero. Initialization has a 60-second limit; writes to backend stdin have a 30-second limit. Response deadlines are checked approximately every 50 ms, with process cleanup time added before errors are returned. Proxy diagnostics use stderr; backend stderr is inherited.
 
 ### Choosing an idle period for stateful tools
 
