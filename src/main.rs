@@ -41,9 +41,11 @@ struct Proxy {
     server_pending: HashMap<String, Instant>,
     expires: Instant,
     output: tokio::io::Stdout,
+    diagnostics: Option<diagnostics::Control>,
 }
 impl Proxy {
     async fn out(&mut self, message: &Value) -> io::Result<()> {
+        self.diagnostic_observe("client-out", message);
         let mut data = serde_json::to_vec(message)?;
         data.push(b'\n');
         self.output.write_all(&data).await?;
@@ -78,6 +80,7 @@ impl Proxy {
         Ok(())
     }
     async fn send(&mut self, message: &Value) -> io::Result<()> {
+        self.diagnostic_observe("backend-out", message);
         self.backend
             .as_mut()
             .ok_or_else(|| io::Error::other("backend unavailable"))?
@@ -106,6 +109,9 @@ impl Proxy {
         self.send(&message).await
     }
     async fn client(&mut self, mut message: Value) -> io::Result<()> {
+        if self.diagnostic_input("client-in", &message)? {
+            return Ok(());
+        }
         let Some(method) = message["method"].as_str().map(str::to_owned) else {
             if let Some(id) = message.get("id") {
                 self.server_pending.remove(&id.to_string());
@@ -195,6 +201,9 @@ impl Proxy {
         }
     }
     async fn upstream(&mut self, mut message: Value) -> io::Result<()> {
+        if self.diagnostic_input("backend-in", &message)? {
+            return Ok(());
+        }
         if message["method"] == "ping" && message.get("id").is_some() {
             return self
                 .send(&json!({"jsonrpc":"2.0","id":message["id"],"result":{}}))
@@ -285,7 +294,7 @@ async fn termination() -> io::Result<()> {
 async fn run(config: Config) -> io::Result<()> {
     let (tx, mut rx) = mpsc::channel(256);
     backend::watch_parent(tx.clone())?;
-    let mut diagnostics = diagnostics::Control::open(&config.cache_dir.join("diagnostics")).ok();
+    let diagnostics = diagnostics::Control::open(&config.cache_dir.join("diagnostics")).ok();
     let mut proxy = Proxy {
         cache: Cache::new(&config),
         config,
@@ -302,6 +311,7 @@ async fn run(config: Config) -> io::Result<()> {
         server_pending: HashMap::new(),
         expires: Instant::now(),
         output: tokio::io::stdout(),
+        diagnostics,
     };
     let mut input = BufReader::new(tokio::io::stdin()).lines();
     let mut tick = interval(Duration::from_millis(50));
@@ -348,17 +358,10 @@ async fn run(config: Config) -> io::Result<()> {
             },
             _ = &mut interrupt => Ok(false),
         };
-        if let Some(control) = diagnostics.as_mut() {
-            let busy = !proxy.pending.is_empty()
-                || !proxy.queue.is_empty()
-                || !proxy.server_pending.is_empty()
-                || proxy.handshake.is_some();
-            match control.poll(busy, proxy.backend.is_some()).unwrap_or(None) {
-                Some(diagnostics::Command::StopBackend) => proxy.stop().await,
-                Some(diagnostics::Command::Exit) => break Ok(()),
-                Some(diagnostics::Command::Fail) => break Err(io::Error::other("diagnostic exit")),
-                None => (),
-            }
+        match proxy.diagnostic_pump().await {
+            Some(diagnostics::Command::Exit) => break Ok(()),
+            Some(diagnostics::Command::Fail) => break Err(io::Error::other("diagnostic exit")),
+            _ => (),
         }
         match action {
             Ok(true) => proxy.stop_discovery().await,

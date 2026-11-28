@@ -1,6 +1,9 @@
 param(
     [Parameter(Mandatory = $true)][int]$ProcessId,
-    [ValidateSet('status', 'stop-backend', 'exit', 'fail')][string]$Command = 'status',
+    [ValidateSet('status', 'stop-backend', 'exit', 'fail', 'observe', 'hold', 'resume', 'sendToClient', 'sendToBackend')][string]$Command = 'status',
+    [string]$Json,
+    [ValidateSet('client-in', 'backend-in')][string]$Direction = 'client-in',
+    [switch]$DisableObservation,
     [string]$CacheDirectory = (Join-Path ([IO.Path]::GetTempPath()) 'mcp-lazy-proxy')
 )
 $ErrorActionPreference = 'Stop'
@@ -14,7 +17,14 @@ if ($candidates.Count -ne 1) { throw 'Expected one control directory for this ru
 $directory = $candidates[0].FullName
 $staged = Join-Path $directory ('command-' + [guid]::NewGuid().ToString('N') + '.part')
 try {
-    [IO.File]::WriteAllText($staged, $Command)
+    $request = @{ op = $Command }
+    if ($Command -in @('sendToClient', 'sendToBackend')) {
+        if (-not $Json) { throw 'Pass -Json with a JSON-RPC message.' }
+        $request.message = $Json | ConvertFrom-Json
+    }
+    if ($Command -eq 'hold') { $request.direction = $Direction }
+    if ($Command -eq 'observe') { $request.enabled = -not $DisableObservation }
+    [IO.File]::WriteAllText($staged, ($request | ConvertTo-Json -Depth 100 -Compress))
     [IO.File]::Move($staged, (Join-Path $directory 'command'))
 } finally {
     Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue

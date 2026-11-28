@@ -258,3 +258,30 @@ test('diagnostic fail closes transport with a nonzero exit code',async()=>{
     await until(()=>p.child.exitCode!==null,'diagnostic failure');assert.equal(p.child.exitCode,1);
   }finally{if(p.child.exitCode===null)await p.close();}
 });
+
+
+test('diagnostic bridge injects JSON, captures both peers and resumes held client traffic',async()=>{
+  const dir=await workspace(),p=connect(dir,{extra:['--idle-ms','0']});
+  try{
+    await p.request('ping');const root=join(dir,'cache','diagnostics');const [entry]=await readdir(root);const inbox=join(root,entry);
+    const command=async request=>{await writeFile(join(inbox,'command'),JSON.stringify(request));await until(async()=>{try{await access(join(inbox,'command'));return false}catch{return true}},'command consumed');};
+    const events=async()=>{try{return (await readFile(join(inbox,'events.jsonl'),'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse)}catch{return []}};
+    await command({op:'observe'});
+    await command({op:'sendToClient',message:{jsonrpc:'2.0',id:'test-id',method:'roots/list'}});
+    await until(async()=> (await events()).some(e=>e.direction==='client-in'&&e.message.result?.roots),'client response captured');
+    assert.equal((await records(dir)).length,0,'diagnostic client reply must not start a backend');
+    await command({op:'hold',direction:'client-in'});
+    let answered=false;const ping=p.request('ping').then(m=>{answered=true;return m});await delay(150);assert.equal(answered,false);
+    await command({op:'resume'});assert.deepEqual((await ping).result,{});
+    await p.init();await call(p,'echo');
+    await command({op:'hold',direction:'backend-in'});
+    let backendAnswered=false;const echo=call(p,'echo').then(m=>{backendAnswered=true;return m});
+    await delay(150);assert.equal(backendAnswered,false);
+    await command({op:'resume'});assert.ok((await echo).result);
+    await command({op:'sendToBackend',message:{jsonrpc:'2.0',id:123,method:'ping'}});
+    await until(async()=> (await events()).some(e=>e.direction==='backend-in'&&String(e.message.id).startsWith('lazy-diagnostic-')),'backend reply captured');
+    assert.ok(!p.messages.some(m=>String(m.id).startsWith('lazy-diagnostic-')&&!m.method),'diagnostic backend replies stay out of client transport');
+    await command({op:'sendToClient',message:{jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'diagnostic-test'}}});
+    await until(()=>p.messages.some(m=>m.params?.data==='diagnostic-test'));
+  }finally{await p.close();}
+});

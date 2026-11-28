@@ -168,3 +168,31 @@ GitHub updates compare the release asset's built-in `digest` with the installed
 EXE's SHA-256. Local updates compute the same digest from `updatePath`. Identical
 files are skipped regardless of version labels. The downloaded or staged file
 must match the selected digest before replacement.
+
+
+The diagnostics bridge accepts JSON commands through the same per-process inbox:
+
+```powershell
+./scripts/control.ps1 -ProcessId 12345 -Command observe
+./scripts/control.ps1 -ProcessId 12345 -Command sendToClient -Json '{"jsonrpc":"2.0","id":1,"method":"roots/list"}'
+./scripts/control.ps1 -ProcessId 12345 -Command sendToBackend -Json '{"jsonrpc":"2.0","id":1,"method":"ping"}'
+./scripts/control.ps1 -ProcessId 12345 -Command hold -Direction backend-in
+./scripts/control.ps1 -ProcessId 12345 -Command resume
+```
+
+Observation records `client-in`, `client-out`, `backend-in`, `backend-out` and
+injection reports in `events.jsonl`, capped at approximately 4 MiB. It starts only
+when requested and can be disabled with `observe -DisableObservation`. Captured
+messages can contain private data; the capture stays in the local control directory
+after exit for analysis. Each injection also writes `last-send.json` with its actual
+wire message and any send error. Injected requests receive unique IDs; their replies
+are captured and consumed by diagnostics instead of entering normal proxy routing.
+Supported requests depend on the peer's negotiated MCP capabilities. Sending to a
+backend requires an already running backend.
+
+`hold` buffers one incoming direction (`client-in` or `backend-in`); `resume` replays
+the buffered messages in arrival order. The limit is 256 held messages; exceeding
+it ends the test connection. Normal response timeouts continue during a hold.
+All experiment logic and the proxy extension methods live in `src/diagnostics.rs`;
+`scripts/control.ps1` is the external driver. The main proxy contains only routing
+hooks, the optional control field and lifecycle dispatch.
