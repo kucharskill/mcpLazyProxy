@@ -26,6 +26,7 @@ try {
         if ($asset.Count -ne 1) { throw 'The latest release has no unique executable asset.' }
         Invoke-WebRequest -UseBasicParsing -Uri $asset[0].browser_download_url -OutFile $incoming
     }
+    [IO.File]::SetLastWriteTimeUtc($incoming, [DateTime]::UtcNow)
     if (Test-Path -LiteralPath $target) {
         try { [IO.File]::Move($target, $backup) }
         catch { throw 'Windows blocked renaming the installed executable. Close the application holding it and retry. No process was terminated.' }
@@ -35,12 +36,7 @@ try {
         if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $target)) { [IO.File]::Move($backup, $target) }
         throw
     }
-    $state = @{
-        tag = if ($ReleaseDirectory) { $null } else { $release.tag_name }
-        releaseId = if ($ReleaseDirectory) { $null } else { $release.id }
-        installedAtUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-        lastCheckedAtUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-    }
+    $state = @{}
     foreach ($option in @('updatePath', 'debug')) {
         if ($null -ne $settings -and $null -ne $settings.PSObject.Properties[$option]) {
             $state[$option] = $settings.$option

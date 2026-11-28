@@ -71,7 +71,7 @@ Each proxy start makes one background update attempt. An installation younger th
 
 The updater uses Windows WinHTTP to query the latest GitHub Release and downloads `mcp-lazy-proxy.exe` when the asset SHA-256 differs from the installed file. GitHub supplies the digest in release asset metadata. Downloads go to a temporary filename beside the installed EXE, followed by the same rename-and-replace procedure used by the installer. Running sessions continue on their existing image; new sessions use the installed update.
 
-The installer, startup cleanup, and updater share an exclusive file lock. A process that finds the lock busy immediately continues serving MCP. Update errors are silent. The installation record is `mcp-lazy-proxy.json` beside the EXE, with the release tag, release ID, installation time and last attempt time. The record also protects a fresh manual installation from being updated during its first 10 minutes.
+The installer, startup cleanup, and updater share an exclusive file lock. A process that finds the lock busy immediately continues serving MCP. Update errors are silent. The adjacent JSON contains only optional settings. The EXE modification time provides the ten-minute installation-age gate; the lock file modification time records the last GitHub check attempt. Cleanup and ordinary lock acquisition preserve that timestamp. Successful replacements set a fresh EXE modification time.
 
 ## Cache and lifetime
 
@@ -205,4 +205,5 @@ hooks, the optional control field and lifecycle dispatch.
 The settings filename is derived from the running executable by replacing its
 extension with `.json`: `mcp-lazy-proxy.exe` reads `mcp-lazy-proxy.json`.
 The optional `debug` field enables diagnostics only when it is `true`.
+Update attempts leave the JSON unchanged.
 The installer preserves `debug` and `updatePath` when replacing the executable.

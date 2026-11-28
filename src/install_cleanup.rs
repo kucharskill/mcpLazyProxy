@@ -1,3 +1,5 @@
+pub const LOCK_FILE: &str = ".mcp-lazy-proxy-install.lock";
+
 #[cfg(windows)]
 pub fn run() {
     use std::fs;
@@ -32,12 +34,26 @@ pub fn run() {
 #[cfg(windows)]
 pub fn lock(directory: &std::path::Path) -> std::io::Result<std::fs::File> {
     use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt};
+    let path = directory.join(LOCK_FILE);
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .share_mode(0)
+        .open(&path)
+    {
+        Ok(file) => {
+            file.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))?;
+            return Ok(file);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+        Err(e) => return Err(e),
+    }
     OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
         .share_mode(0)
-        .open(directory.join(".mcp-lazy-proxy-install.lock"))
+        .open(path)
 }
 
 #[cfg(any(windows, test))]

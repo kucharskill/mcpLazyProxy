@@ -67,26 +67,17 @@ fn state(directory: &Path) -> Value {
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}))
 }
-fn save(directory: &Path, state: &Value) -> io::Result<()> {
-    fs::write(state_path(directory)?, serde_json::to_vec(state)?)
+fn modified(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).ok()?.modified().ok()
 }
-fn eligible(directory: &Path, state: &Value, now: u64) -> bool {
-    if state.get("updatePath").is_some() {
-        return true;
-    }
-    let installed = state["installedAtUnix"].as_u64().or_else(|| {
-        fs::metadata(directory.join("mcp-lazy-proxy.exe"))
-            .ok()?
-            .modified()
-            .ok()?
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .map(|time| time.as_secs())
-    });
-    installed.is_some_and(|installed| now.saturating_sub(installed) >= INTERVAL)
-        && state["lastCheckedAtUnix"]
-            .as_u64()
-            .is_none_or(|checked| now.saturating_sub(checked) >= INTERVAL)
+fn recent(modified: Option<SystemTime>, time: u64) -> bool {
+    modified
+        .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
+        .is_some_and(|m| time.saturating_sub(m.as_secs()) < INTERVAL)
+}
+fn eligible(directory: &Path, state: &Value, time: u64) -> bool {
+    state.get("updatePath").is_some()
+        || modified(&directory.join("mcp-lazy-proxy.exe")).is_some_and(|m| !recent(Some(m), time))
 }
 struct Incoming(PathBuf);
 impl Drop for Incoming {
@@ -101,17 +92,26 @@ fn attempt(
     stopped: &Mutex<bool>,
     mut get: impl FnMut(&str, &mut dyn io::Write, usize) -> io::Result<()>,
 ) -> io::Result<()> {
-    if !eligible(directory, &state(directory), time) {
+    let local = state(directory).get("updatePath").is_some();
+    if !eligible(directory, &state(directory), time)
+        || (!local && recent(modified(&directory.join(install_cleanup::LOCK_FILE)), time))
+    {
         return Ok(());
     }
     // Acquisition never waits. Re-read state after taking the installer's shared lock.
-    let _lock = install_cleanup::lock(directory)?;
-    let mut state = state(directory);
-    if !eligible(directory, &state, time) {
+    let lock = install_cleanup::lock(directory)?;
+    let state = state(directory);
+    let local = state.get("updatePath").is_some();
+    if !eligible(directory, &state, time)
+        || (!local && recent(lock.metadata()?.modified().ok(), time))
+    {
         return Ok(());
     }
-    state["lastCheckedAtUnix"] = json!(time);
-    save(directory, &state)?;
+    if !local {
+        lock.set_times(
+            fs::FileTimes::new().set_modified(UNIX_EPOCH + std::time::Duration::from_secs(time)),
+        )?;
+    }
     if let Some(path) = state.get("updatePath").cloned() {
         let source = PathBuf::from(
             path.as_str()
@@ -137,14 +137,11 @@ fn attempt(
         if digest(&incoming.0)? != source_digest {
             return Err(io::Error::other("local update changed during copy"));
         }
-        return replace(directory, incoming, &id, &mut state, stopped);
+        return replace(directory, incoming, &id, stopped);
     }
     let mut bytes = Vec::new();
     get(API, &mut bytes, 2 * 1024 * 1024)?;
     let release: Value = serde_json::from_slice(&bytes)?;
-    let tag = release["tag_name"]
-        .as_str()
-        .ok_or_else(|| io::Error::other("missing release version"))?;
     let assets = release["assets"]
         .as_array()
         .ok_or_else(|| io::Error::other("missing release assets"))?;
@@ -187,9 +184,7 @@ fn attempt(
     if digest(&incoming.0)? != expected {
         return Err(io::Error::other("asset SHA-256 mismatch"));
     }
-    state["tag"] = json!(tag);
-    state["releaseId"] = release["id"].clone();
-    replace(directory, incoming, &id, &mut state, stopped)
+    replace(directory, incoming, &id, stopped)
 }
 
 fn staging(directory: &Path) -> (String, Incoming) {
@@ -210,7 +205,6 @@ fn replace(
     directory: &Path,
     incoming: Incoming,
     id: &str,
-    state: &mut Value,
     stopped: &Mutex<bool>,
 ) -> io::Result<()> {
     let cancelled = stopped
@@ -221,12 +215,14 @@ fn replace(
     }
     let target = directory.join("mcp-lazy-proxy.exe");
     let backup = directory.join(format!("mcp-lazy-proxy.old-{id}.exe"));
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&incoming.0)?
+        .set_times(fs::FileTimes::new().set_modified(SystemTime::now()))?;
     fs::rename(&target, &backup)?;
     if let Err(error) = fs::rename(&incoming.0, &target) {
         let _ = fs::rename(&backup, &target);
         return Err(error);
     }
-    state["installedAtUnix"] = json!(now());
-    save(directory, state)?;
     Ok(())
 }

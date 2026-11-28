@@ -15,7 +15,8 @@ try {
     $target = Join-Path $installDir 'mcp-lazy-proxy.exe'
     if (-not (Test-Path -LiteralPath $target)) { throw 'Initial installation did not create EXE.' }
     $state = Get-Content -LiteralPath (Join-Path $installDir 'mcp-lazy-proxy.json') -Raw | ConvertFrom-Json
-    if (([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $state.installedAtUnix) -gt 60) { throw 'Installer did not record a fresh installation time.' }
+    if (([DateTime]::UtcNow - [IO.File]::GetLastWriteTimeUtc($target)).TotalSeconds -gt 60) { throw 'Installer did not set a fresh EXE timestamp.' }
+    if (@($state.PSObject.Properties).Count -ne 0) { throw 'Initial JSON should contain settings only.' }
     $expected = (Get-FileHash -LiteralPath $target).Hash
     $state | Add-Member -NotePropertyName debug -NotePropertyValue $true -Force
     $state | Add-Member -NotePropertyName updatePath -NotePropertyValue (Join-Path $ReleaseDirectory 'mcp-lazy-proxy.exe') -Force

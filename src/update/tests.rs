@@ -18,12 +18,27 @@ fn directory() -> PathBuf {
         .join(format!("{}-{id}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     fs::write(directory.join("mcp-lazy-proxy.exe"), b"old-image").unwrap();
-    save(
-        &directory,
-        &json!({"tag":"v0.1.5-build.7","installedAtUnix":TIME-1000,"lastCheckedAtUnix":0}),
-    )
-    .unwrap();
+    set_modified(&directory.join("mcp-lazy-proxy.exe"), TIME - 1000);
+    save(&directory, &json!({})).unwrap();
     directory
+}
+fn save(directory: &Path, value: &Value) -> io::Result<()> {
+    fs::write(state_path(directory)?, serde_json::to_vec(value)?)
+}
+fn set_modified(path: &Path, time: u64) {
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(time)))
+        .unwrap();
+}
+fn checked(directory: &Path) -> u64 {
+    modified(&directory.join(install_cleanup::LOCK_FILE))
+        .unwrap()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 fn release(tag: &str) -> Value {
     json!({"tag_name":tag,"id":123,"assets":[{"name":"mcp-lazy-proxy.exe", "digest":format!("sha256:{:x}",Sha256::digest(b"new-image")),
@@ -42,28 +57,28 @@ fn no_staging(directory: &Path) {
 #[test]
 fn fresh_installation_and_recent_attempt_skip_network() {
     let directory = directory();
-    for state in [
-        json!({"installedAtUnix":TIME-599}),
-        json!({"installedAtUnix":TIME+10}),
-        json!({"installedAtUnix":TIME-1000,"lastCheckedAtUnix":TIME-599}),
-    ] {
-        save(&directory, &state).unwrap();
+    for (installed, last_checked) in [(TIME - 599, 0), (TIME + 10, 0), (TIME - 1000, TIME - 599)] {
+        set_modified(&directory.join("mcp-lazy-proxy.exe"), installed);
+        let lock = install_cleanup::lock(&directory).unwrap();
+        lock.set_times(
+            fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(last_checked)),
+        )
+        .unwrap();
+        drop(lock);
         attempt(&directory, TIME, &Mutex::new(false), |_, _, _| {
             panic!("network should be skipped")
         })
         .unwrap();
     }
-    assert!(eligible(
-        &directory,
-        &json!({"installedAtUnix":TIME-600,"lastCheckedAtUnix":TIME-600}),
-        TIME
-    ));
+    set_modified(&directory.join("mcp-lazy-proxy.exe"), TIME - 600);
+    assert!(eligible(&directory, &json!({}), TIME));
 }
 
 #[test]
 fn missing_install_record_uses_binary_write_time() {
     let directory = directory();
     fs::remove_file(state_path(&directory).unwrap()).unwrap();
+    set_modified(&directory.join("mcp-lazy-proxy.exe"), now());
     assert!(!eligible(&directory, &state(&directory), now()));
     let file = fs::OpenOptions::new()
         .write(true)
@@ -104,8 +119,8 @@ fn different_digest_downloads_and_replaces_the_image() {
         .collect();
     assert_eq!(backups.len(), 1);
     assert_eq!(fs::read(backups[0].path()).unwrap(), b"old-image");
-    assert_eq!(state(&directory)["tag"], "v0.1.6-build.1");
-    assert_eq!(state(&directory)["lastCheckedAtUnix"], TIME);
+    assert_eq!(state(&directory), json!({}));
+    assert_eq!(checked(&directory), TIME);
     no_staging(&directory);
 }
 
@@ -143,7 +158,7 @@ fn busy_installer_lock_fails_immediately_without_network() {
         .is_err()
     );
     assert!(began.elapsed() < Duration::from_secs(1));
-    assert_eq!(state(&directory)["lastCheckedAtUnix"], 0);
+    assert_eq!(checked(&directory), 0);
 }
 
 #[test]
@@ -174,7 +189,7 @@ fn concurrent_starts_make_one_attempt_and_later_starts_obey_cooldown() {
         panic!("cooldown was renewed incorrectly")
     })
     .unwrap();
-    assert_eq!(state(&directory)["lastCheckedAtUnix"], TIME);
+    assert_eq!(checked(&directory), TIME);
 }
 
 #[test]
@@ -195,7 +210,7 @@ fn partial_download_failure_keeps_the_old_image_and_records_the_attempt() {
         fs::read(directory.join("mcp-lazy-proxy.exe")).unwrap(),
         b"old-image"
     );
-    assert_eq!(state(&directory)["lastCheckedAtUnix"], TIME);
+    assert_eq!(checked(&directory), TIME);
     no_staging(&directory);
 }
 
@@ -312,11 +327,8 @@ fn dropping_the_startup_guard_waits_only_for_the_swap_section() {
 #[ignore = "downloads the latest public GitHub executable through native WinHTTP"]
 fn live_github_update() {
     let directory = directory();
-    let mut saved = state(&directory);
-    saved["tag"] = json!("v0.0.0");
-    save(&directory, &saved).unwrap();
     attempt(&directory, TIME, &Mutex::new(false), http::get).unwrap();
-    assert!(state(&directory)["tag"].as_str().unwrap().starts_with('v'));
+    assert_eq!(state(&directory), json!({}));
     let file = fs::read(directory.join("mcp-lazy-proxy.exe")).unwrap();
     assert!(file.len() > 100_000);
     assert!(file.starts_with(b"MZ"));
@@ -330,8 +342,7 @@ fn local_update_uses_digest_without_network_and_preserves_settings() {
     fs::write(&source, b"local-image").unwrap();
     let mut record = state(&directory);
     record["updatePath"] = json!(source);
-    record["installedAtUnix"] = json!(TIME);
-    record["lastCheckedAtUnix"] = json!(TIME);
+    set_modified(&directory.join("mcp-lazy-proxy.exe"), TIME);
     save(&directory, &record).unwrap();
     attempt(&directory, TIME, &Mutex::new(false), |_, _, _| {
         panic!("local mode must not use network")
@@ -342,10 +353,7 @@ fn local_update_uses_digest_without_network_and_preserves_settings() {
         b"local-image"
     );
     assert_eq!(state(&directory)["updatePath"], record["updatePath"]);
-    let mut record = state(&directory);
-    record["installedAtUnix"] = json!(TIME - 1000);
-    record["lastCheckedAtUnix"] = json!(0);
-    save(&directory, &record).unwrap();
+    assert_eq!(state(&directory), record);
     let before = fs::read_dir(&directory).unwrap().count();
     attempt(&directory, TIME, &Mutex::new(false), |_, _, _| {
         panic!("no network")
@@ -399,4 +407,15 @@ fn mismatched_asset_digest_preserves_installed_image() {
         b"old-image"
     );
     no_staging(&directory);
+}
+
+#[test]
+fn acquiring_cleanup_lock_does_not_renew_github_cooldown() {
+    let directory = directory();
+    let lock = install_cleanup::lock(&directory).unwrap();
+    lock.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(TIME - 600)))
+        .unwrap();
+    drop(lock);
+    drop(install_cleanup::lock(&directory).unwrap());
+    assert_eq!(checked(&directory), TIME - 600);
 }
