@@ -3,6 +3,7 @@
 mod backend;
 mod cache;
 mod config;
+mod diagnostics;
 mod install_cleanup;
 #[cfg(windows)]
 mod update;
@@ -284,6 +285,7 @@ async fn termination() -> io::Result<()> {
 async fn run(config: Config) -> io::Result<()> {
     let (tx, mut rx) = mpsc::channel(256);
     backend::watch_parent(tx.clone())?;
+    let mut diagnostics = diagnostics::Control::open(&config.cache_dir.join("diagnostics")).ok();
     let mut proxy = Proxy {
         cache: Cache::new(&config),
         config,
@@ -346,6 +348,18 @@ async fn run(config: Config) -> io::Result<()> {
             },
             _ = &mut interrupt => Ok(false),
         };
+        if let Some(control) = diagnostics.as_mut() {
+            let busy = !proxy.pending.is_empty()
+                || !proxy.queue.is_empty()
+                || !proxy.server_pending.is_empty()
+                || proxy.handshake.is_some();
+            match control.poll(busy, proxy.backend.is_some()).unwrap_or(None) {
+                Some(diagnostics::Command::StopBackend) => proxy.stop().await,
+                Some(diagnostics::Command::Exit) => break Ok(()),
+                Some(diagnostics::Command::Fail) => break Err(io::Error::other("diagnostic exit")),
+                None => (),
+            }
+        }
         match action {
             Ok(true) => proxy.stop_discovery().await,
             Ok(false) => break Ok(()),

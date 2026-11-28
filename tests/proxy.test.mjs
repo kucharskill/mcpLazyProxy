@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {spawn,spawnSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
-import {mkdir,readFile,mkdtemp,copyFile,rename,writeFile,access} from 'node:fs/promises';
+import {mkdir,readFile,mkdtemp,copyFile,rename,writeFile,access,readdir} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 
@@ -223,4 +223,38 @@ test('parent death shuts down proxy even when another process keeps stdin open',
   }finally{
     parent.kill('SIGKILL');for(const pid of [...pids,info?.proxy,info?.holder].filter(Boolean))if(alive(pid))process.kill(pid,'SIGKILL');
   }
+});
+
+
+test('diagnostic control targets one process and defers exit during a request',async()=>{
+  const dir=await workspace(),root=join(dir,'cache','diagnostics');
+  const p=connect(dir,{extra:['--idle-ms','0']}),other=connect(await workspace());
+  try{
+    await p.init();await other.request('ping');
+    const entries=await readdir(root);assert.equal(entries.length,1);
+    const inbox=join(root,entries[0]);
+    const status=()=>readFile(join(inbox,'status.json'),'utf8').then(JSON.parse);
+    assert.equal((await status()).pid,p.child.pid);
+    const oldPid=text(await call(p,'echo')).pid;
+    await writeFile(join(inbox,'command'),'stop-backend');
+    await until(async()=> (await status()).state==='accepted');
+    await until(()=>!alive(oldPid),'controlled backend exit');
+    assert.notEqual(text(await call(p,'echo')).pid,oldPid);
+    const response=call(p,'echo',{delay:1800});await delay(100);
+    await writeFile(join(inbox,'command'),'exit');
+    await until(async()=> (await status()).state==='pending');
+    assert.equal(p.child.exitCode,null);assert.ok((await response).result);
+    await until(()=>p.child.exitCode!==null,'diagnostic exit');assert.equal(p.child.exitCode,0);
+    assert.deepEqual((await other.request('ping')).result,{});
+    await until(async()=> (await readdir(root)).length===0,'diagnostic files cleaned');
+  }finally{if(p.child.exitCode===null)await p.close();await other.close();}
+});
+
+test('diagnostic fail closes transport with a nonzero exit code',async()=>{
+  const dir=await workspace(),root=join(dir,'cache','diagnostics'),p=connect(dir);
+  try{
+    await p.request('ping');const [entry]=await readdir(root);
+    await writeFile(join(root,entry,'command'),'fail');
+    await until(()=>p.child.exitCode!==null,'diagnostic failure');assert.equal(p.child.exitCode,1);
+  }finally{if(p.child.exitCode===null)await p.close();}
 });

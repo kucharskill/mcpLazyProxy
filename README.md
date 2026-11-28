@@ -127,3 +127,30 @@ The controlled tests cover cache reuse across replicas, cold discovery cleanup, 
 Every push to `main` runs Windows checks, tests the staged executable from a separate directory, and publishes it automatically to [GitHub Releases](https://github.com/kucharskill/mcpLazyProxy/releases). Release names combine the Cargo version with the workflow run number, such as `v0.1.4-build.5`, and identify the tested commit. The installer always selects the latest published release. Documentation and the MIT license live in this repository.
 
 Rust and Tokio handle the proxy and asynchronous I/O. `process-wrap` supplies process-tree management, and `serde_json` preserves extensible JSON messages. Design references include [tkukushkin/lazy-mcp](https://github.com/tkukushkin/lazy-mcp), [xz-dev/dsh-lazy-mcp](https://github.com/xz-dev/dsh-lazy-mcp), and [sleticalboy/lazy-mcp-wrapper](https://github.com/sleticalboy/lazy-mcp-wrapper). Process management references: [process-wrap](https://docs.rs/process-wrap/latest/process_wrap/) and [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).
+
+
+## Process control diagnostics
+
+Each proxy publishes a small control directory under its cache directory:
+`OS_TEMP/mcp-lazy-proxy/diagnostics/<pid>-<start-token>/`. The separate diagnostics
+module checks for a command once per second using the existing event loop, with
+no extra thread or network listener. Startup tokens distinguish reused PIDs.
+The files contain process status and the version, without arguments or environment data.
+The control directory is removed on normal exit. Access follows the cache directory's
+filesystem permissions; keep that directory private to your user account.
+
+Use the repository's PowerShell helper to select one running proxy:
+
+```powershell
+./scripts/control.ps1 -ProcessId 12345 -Command status
+./scripts/control.ps1 -ProcessId 12345 -Command stop-backend
+./scripts/control.ps1 -ProcessId 12345 -Command exit
+./scripts/control.ps1 -ProcessId 12345 -Command fail
+```
+
+`stop-backend` releases the backend while preserving the client transport.
+`exit` closes the proxy with code 0; `fail` closes it with code 1 to test client
+recovery. Lifecycle commands wait for outstanding MCP requests to finish. Status
+is sampled when requested. Pass `-CacheDirectory` when the proxy uses a custom
+cache path. After installing this version, newly started proxies expose control
+automatically with the existing client configuration.
