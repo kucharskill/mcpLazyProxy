@@ -13,7 +13,13 @@ use std::{
 
 const INTERVAL: u64 = 600;
 const API: &str = "https://api.github.com/repos/kucharskill/mcpLazyProxy/releases/latest";
-const STATE: &str = "installed-release.json";
+fn state_path(directory: &Path) -> io::Result<PathBuf> {
+    let executable = std::env::current_exe()?;
+    let filename = executable
+        .file_name()
+        .ok_or_else(|| io::Error::other("missing executable filename"))?;
+    Ok(directory.join(filename).with_extension("json"))
+}
 
 pub struct Guard(Arc<Mutex<bool>>);
 impl Drop for Guard {
@@ -54,14 +60,15 @@ fn digest(path: &Path) -> io::Result<String> {
     Ok(format!("sha256:{:x}", Sha256::digest(fs::read(path)?)))
 }
 fn state(directory: &Path) -> Value {
-    fs::read(directory.join(STATE))
+    state_path(directory)
         .ok()
+        .and_then(|path| fs::read(path).ok())
         .and_then(|data| serde_json::from_slice(&data).ok())
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}))
 }
 fn save(directory: &Path, state: &Value) -> io::Result<()> {
-    fs::write(directory.join(STATE), serde_json::to_vec(state)?)
+    fs::write(state_path(directory)?, serde_json::to_vec(state)?)
 }
 fn eligible(directory: &Path, state: &Value, now: u64) -> bool {
     if state.get("updatePath").is_some() {

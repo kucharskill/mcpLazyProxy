@@ -294,10 +294,10 @@ test('disabled diagnostics leaves no control directory and normal MCP still work
 });
 
 
-test('adjacent debugMode toggles diagnostics without changing client arguments',async()=>{
-  const dir=await workspace(),installed=join(dir,'mcp-lazy-proxy.exe');await copyFile(binary,installed);
+test('adjacent debug toggles diagnostics without changing client arguments',async()=>{
+  const dir=await workspace(),installed=join(dir,'renamed-test-proxy.exe');await copyFile(binary,installed);
   for(const enabled of [false,true]){
-    await writeFile(join(dir,'installed-release.json'),JSON.stringify({debugMode:enabled}));
+    await writeFile(installed.replace(/\.exe$/,'.json'),JSON.stringify({debug:enabled}));
     const p=connect(dir,{executable:installed,env:{MCP_LAZY_DIAGNOSTICS:undefined}});
     try{
       assert.deepEqual((await p.request('ping')).result,{});

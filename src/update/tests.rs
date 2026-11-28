@@ -63,7 +63,7 @@ fn fresh_installation_and_recent_attempt_skip_network() {
 #[test]
 fn missing_install_record_uses_binary_write_time() {
     let directory = directory();
-    fs::remove_file(directory.join(STATE)).unwrap();
+    fs::remove_file(state_path(&directory).unwrap()).unwrap();
     assert!(!eligible(&directory, &state(&directory), now()));
     let file = fs::OpenOptions::new()
         .write(true)

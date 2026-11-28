@@ -35,9 +35,9 @@ impl Control {
             .unwrap_or_else(|| {
                 std::env::current_exe()
                     .ok()
-                    .and_then(|p| fs::read(p.parent()?.join("installed-release.json")).ok())
+                    .and_then(|p| fs::read(p.with_extension("json")).ok())
                     .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                    .is_some_and(|state| state["debugMode"] == true)
+                    .is_some_and(|state| state["debug"] == true)
             });
         if !enabled {
             return Err(io::Error::other("diagnostics disabled"));

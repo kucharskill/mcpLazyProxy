@@ -13,6 +13,11 @@ $incoming = Join-Path $InstallDir "mcp-lazy-proxy.new-$id.exe"
 $target = Join-Path $InstallDir 'mcp-lazy-proxy.exe'
 $backup = Join-Path $InstallDir "mcp-lazy-proxy.old-$id.exe"
 try {
+    $settings = $null
+    $statePath = [IO.Path]::ChangeExtension($target, '.json')
+    if (Test-Path -LiteralPath $statePath) {
+        $settings = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    }
     if ($ReleaseDirectory) {
         Copy-Item -LiteralPath (Join-Path $ReleaseDirectory 'mcp-lazy-proxy.exe') -Destination $incoming
     } else {
@@ -36,7 +41,12 @@ try {
         installedAtUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         lastCheckedAtUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     }
-    [IO.File]::WriteAllText((Join-Path $InstallDir 'installed-release.json'), ($state | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    foreach ($option in @('updatePath', 'debug')) {
+        if ($null -ne $settings -and $null -ne $settings.PSObject.Properties[$option]) {
+            $state[$option] = $settings.$option
+        }
+    }
+    [IO.File]::WriteAllText($statePath, ($state | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
     Write-Output "Installed: $target"
     Write-Output 'Existing sessions keep their current version. New sessions use the installed version.'
 } finally {

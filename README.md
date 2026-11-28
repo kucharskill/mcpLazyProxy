@@ -71,7 +71,7 @@ Each proxy start makes one background update attempt. An installation younger th
 
 The updater uses Windows WinHTTP to query the latest GitHub Release and downloads `mcp-lazy-proxy.exe` when the asset SHA-256 differs from the installed file. GitHub supplies the digest in release asset metadata. Downloads go to a temporary filename beside the installed EXE, followed by the same rename-and-replace procedure used by the installer. Running sessions continue on their existing image; new sessions use the installed update.
 
-The installer, startup cleanup, and updater share an exclusive file lock. A process that finds the lock busy immediately continues serving MCP. Update errors are silent. The installation record is `installed-release.json` beside the EXE, with the release tag, release ID, installation time and last attempt time. The record also protects a fresh manual installation from being updated during its first 10 minutes.
+The installer, startup cleanup, and updater share an exclusive file lock. A process that finds the lock busy immediately continues serving MCP. Update errors are silent. The installation record is `mcp-lazy-proxy.json` beside the EXE, with the release tag, release ID, installation time and last attempt time. The record also protects a fresh manual installation from being updated during its first 10 minutes.
 
 ## Cache and lifetime
 
@@ -131,8 +131,8 @@ Rust and Tokio handle the proxy and asynchronous I/O. `process-wrap` supplies pr
 
 ## Process control diagnostics
 
-Diagnostics are disabled by default. Set `"debugMode": true` in the
-`installed-release.json` beside the EXE to enable them on subsequent process starts.
+Diagnostics are disabled by default. Set `"debug": true` in the
+`mcp-lazy-proxy.json` beside the EXE to enable them on subsequent process starts.
 Set it to `false` to disable them again. Isolated test processes can override this
 with `MCP_LAZY_DIAGNOSTICS=1` (enable) or `0` (disable).
 
@@ -157,12 +157,12 @@ Use the repository's PowerShell helper to select one running proxy:
 `exit` closes the proxy with code 0; `fail` closes it with code 1 to test client
 recovery. Lifecycle commands wait for outstanding MCP requests to finish. Status
 is sampled when requested. Pass `-CacheDirectory` when the proxy uses a custom
-cache path. Newly started proxies expose control when debugMode is enabled; the client
+cache path. Newly started proxies expose control when debug is enabled; the client
 configuration stays unchanged.
 
 
 For local development, add an absolute `updatePath` to the installed
-`installed-release.json`, pointing to a locally built EXE. Startup updates then
+`mcp-lazy-proxy.json`, pointing to a locally built EXE. Startup updates then
 use that file exclusively. A different source SHA-256 triggers a copy
 through the same exclusive lock and image replacement mechanism. Local sources are checked at every process startup; the ten-minute
 installation-age and attempt cooldown apply only to GitHub. A missing or invalid local
@@ -201,3 +201,8 @@ it ends the test connection. Normal response timeouts continue during a hold.
 All experiment logic and the proxy extension methods live in `src/diagnostics.rs`;
 `scripts/control.ps1` is the external driver. The main proxy contains only routing
 hooks, the optional control field and lifecycle dispatch.
+
+The settings filename is derived from the running executable by replacing its
+extension with `.json`: `mcp-lazy-proxy.exe` reads `mcp-lazy-proxy.json`.
+The optional `debug` field enables diagnostics only when it is `true`.
+The installer preserves `debug` and `updatePath` when replacing the executable.

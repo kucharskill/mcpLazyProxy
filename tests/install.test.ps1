@@ -14,11 +14,16 @@ try {
     & $installer -InstallDir $installDir -ReleaseDirectory $ReleaseDirectory | Out-Null
     $target = Join-Path $installDir 'mcp-lazy-proxy.exe'
     if (-not (Test-Path -LiteralPath $target)) { throw 'Initial installation did not create EXE.' }
-    $state = Get-Content -LiteralPath (Join-Path $installDir 'installed-release.json') -Raw | ConvertFrom-Json
+    $state = Get-Content -LiteralPath (Join-Path $installDir 'mcp-lazy-proxy.json') -Raw | ConvertFrom-Json
     if (([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $state.installedAtUnix) -gt 60) { throw 'Installer did not record a fresh installation time.' }
     $expected = (Get-FileHash -LiteralPath $target).Hash
+    $state | Add-Member -NotePropertyName debug -NotePropertyValue $true -Force
+    $state | Add-Member -NotePropertyName updatePath -NotePropertyValue (Join-Path $ReleaseDirectory 'mcp-lazy-proxy.exe') -Force
+    $settingsPath = [IO.Path]::ChangeExtension($target, '.json')
+    [IO.File]::WriteAllText($settingsPath, ($state | ConvertTo-Json -Compress))
     & $installer -InstallDir $installDir -ReleaseDirectory $ReleaseDirectory | Out-Null
-    if ((Get-FileHash -LiteralPath $target).Hash -ne $expected) { throw 'Update changed executable contents.' }
+    $preserved = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+    if ($preserved.debug -ne $true -or $preserved.updatePath -ne $state.updatePath) { throw 'Reinstall lost optional settings.' }
     $backups = @(Get-ChildItem -LiteralPath $installDir -Filter 'mcp-lazy-proxy.old-*.exe')
     if ($backups.Count -ne 1) { throw 'Update did not create an identifiable backup.' }
     $held = [IO.File]::Open($target, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
