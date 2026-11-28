@@ -69,7 +69,7 @@ The installer downloads the EXE and replaces the stable executable path. Running
 
 Each proxy start makes one background update attempt. An installation younger than 10 minutes is kept as-is. A timestamp shared by the installed copies also spaces attempts at least 10 minutes apart across process starts. A long-running proxy performs this check once, at startup.
 
-The updater uses Windows WinHTTP to query the latest GitHub Release and downloads `mcp-lazy-proxy.exe` only when its version is newer. It compares the numeric Cargo version and build number embedded in the EXE, together with the installed release record. Downloads go to a temporary filename beside the installed EXE, followed by the same rename-and-replace procedure used by the installer. Running sessions continue on their existing image; new sessions use the installed update.
+The updater uses Windows WinHTTP to query the latest GitHub Release and downloads `mcp-lazy-proxy.exe` when the asset SHA-256 differs from the installed file. GitHub supplies the digest in release asset metadata. Downloads go to a temporary filename beside the installed EXE, followed by the same rename-and-replace procedure used by the installer. Running sessions continue on their existing image; new sessions use the installed update.
 
 The installer, startup cleanup, and updater share an exclusive file lock. A process that finds the lock busy immediately continues serving MCP. Update errors are silent. The installation record is `installed-release.json` beside the EXE, with the release tag, release ID, installation time and last attempt time. The record also protects a fresh manual installation from being updated during its first 10 minutes.
 
@@ -154,3 +154,17 @@ recovery. Lifecycle commands wait for outstanding MCP requests to finish. Status
 is sampled when requested. Pass `-CacheDirectory` when the proxy uses a custom
 cache path. After installing this version, newly started proxies expose control
 automatically with the existing client configuration.
+
+
+For local development, add an absolute `updatePath` to the installed
+`installed-release.json`, pointing to a locally built EXE. Startup updates then
+use that file exclusively. A different source SHA-256 triggers a copy
+through the same exclusive lock and image replacement mechanism. Local sources are checked at every process startup; the ten-minute
+installation-age and attempt cooldown apply only to GitHub. A missing or invalid local
+source leaves the installed image in place. Remove `updatePath` to resume GitHub
+Release updates. Keep the source and installed executable at separate paths.
+
+GitHub updates compare the release asset's built-in `digest` with the installed
+EXE's SHA-256. Local updates compute the same digest from `updatePath`. Identical
+files are skipped regardless of version labels. The downloaded or staged file
+must match the selected digest before replacement.

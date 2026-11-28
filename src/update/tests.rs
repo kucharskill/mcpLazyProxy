@@ -26,7 +26,7 @@ fn directory() -> PathBuf {
     directory
 }
 fn release(tag: &str) -> Value {
-    json!({"tag_name":tag,"id":123,"assets":[{"name":"mcp-lazy-proxy.exe",
+    json!({"tag_name":tag,"id":123,"assets":[{"name":"mcp-lazy-proxy.exe", "digest":format!("sha256:{:x}",Sha256::digest(b"new-image")),
         "browser_download_url":"https://github.com/kucharskill/mcpLazyProxy/releases/download/v0.1.6-build.1/mcp-lazy-proxy.exe"}]})
 }
 fn no_staging(directory: &Path) {
@@ -40,22 +40,6 @@ fn no_staging(directory: &Path) {
 }
 
 #[test]
-fn versions_order_numeric_release_and_build_components() {
-    assert!(version("v0.1.10-build.2") > version("v0.1.9-build.999"));
-    assert!(version("v0.1.5-build.10") > version("v0.1.5-build.9"));
-    assert_eq!(version("0.1.5"), Some([0, 1, 5, 0]));
-    for value in [
-        "latest",
-        "v0.1",
-        "v0.1.5-extra",
-        "v0.1.5.6",
-        "v0.1.5-build.bad",
-    ] {
-        assert_eq!(version(value), None);
-    }
-}
-
-#[test]
 fn fresh_installation_and_recent_attempt_skip_network() {
     let directory = directory();
     for state in [
@@ -64,13 +48,9 @@ fn fresh_installation_and_recent_attempt_skip_network() {
         json!({"installedAtUnix":TIME-1000,"lastCheckedAtUnix":TIME-599}),
     ] {
         save(&directory, &state).unwrap();
-        attempt(
-            &directory,
-            "0.1.5-build.7",
-            TIME,
-            &Mutex::new(false),
-            |_, _, _| panic!("network should be skipped"),
-        )
+        attempt(&directory, TIME, &Mutex::new(false), |_, _, _| {
+            panic!("network should be skipped")
+        })
         .unwrap();
     }
     assert!(eligible(
@@ -95,23 +75,17 @@ fn missing_install_record_uses_binary_write_time() {
 }
 
 #[test]
-fn only_newer_release_downloads_and_replaces_the_image() {
+fn different_digest_downloads_and_replaces_the_image() {
     let directory = directory();
     let mut requests = 0;
-    attempt(
-        &directory,
-        "0.1.5-build.7",
-        TIME,
-        &Mutex::new(false),
-        |url, output, _| {
-            requests += 1;
-            if url == API {
-                output.write_all(&serde_json::to_vec(&release("v0.1.6-build.1")).unwrap())
-            } else {
-                output.write_all(b"new-image")
-            }
-        },
-    )
+    attempt(&directory, TIME, &Mutex::new(false), |url, output, _| {
+        requests += 1;
+        if url == API {
+            output.write_all(&serde_json::to_vec(&release("v0.1.6-build.1")).unwrap())
+        } else {
+            output.write_all(b"new-image")
+        }
+    })
     .unwrap();
     assert_eq!(requests, 2);
     assert_eq!(
@@ -136,21 +110,18 @@ fn only_newer_release_downloads_and_replaces_the_image() {
 }
 
 #[test]
-fn equal_older_or_already_installed_release_is_metadata_only() {
-    for tag in ["v0.1.5-build.7", "v0.1.5-build.6", "v0.1.4-build.999"] {
+fn matching_digest_skips_download_regardless_of_version() {
+    for tag in ["v0.1.5-build.7", "v0.1.4", "v99.0.0"] {
         let directory = directory();
         let mut requests = 0;
-        attempt(
-            &directory,
-            "0.1.5-build.7",
-            TIME,
-            &Mutex::new(false),
-            |url, output, _| {
-                assert_eq!(url, API);
-                requests += 1;
-                output.write_all(&serde_json::to_vec(&release(tag)).unwrap())
-            },
-        )
+        attempt(&directory, TIME, &Mutex::new(false), |url, output, _| {
+            assert_eq!(url, API);
+            requests += 1;
+            let mut response = release(tag);
+            response["assets"][0]["digest"] =
+                json!(digest(&directory.join("mcp-lazy-proxy.exe")).unwrap());
+            output.write_all(&serde_json::to_vec(&response).unwrap())
+        })
         .unwrap();
         assert_eq!(requests, 1);
         assert_eq!(
@@ -158,25 +129,6 @@ fn equal_older_or_already_installed_release_is_metadata_only() {
             b"old-image"
         );
     }
-    let directory = directory();
-    let mut saved = state(&directory);
-    saved["tag"] = json!("v0.1.6-build.1");
-    save(&directory, &saved).unwrap();
-    attempt(
-        &directory,
-        "0.1.5-build.7",
-        TIME,
-        &Mutex::new(false),
-        |url, output, _| {
-            assert_eq!(url, API);
-            output.write_all(&serde_json::to_vec(&release("v0.1.6-build.1")).unwrap())
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        fs::read(directory.join("mcp-lazy-proxy.exe")).unwrap(),
-        b"old-image"
-    );
 }
 
 #[test]
@@ -185,13 +137,9 @@ fn busy_installer_lock_fails_immediately_without_network() {
     let _lock = install_cleanup::lock(&directory).unwrap();
     let began = Instant::now();
     assert!(
-        attempt(
-            &directory,
-            "0.1.5",
-            TIME,
-            &Mutex::new(false),
-            |_, _, _| panic!("network while locked")
-        )
+        attempt(&directory, TIME, &Mutex::new(false), |_, _, _| panic!(
+            "network while locked"
+        ))
         .is_err()
     );
     assert!(began.elapsed() < Duration::from_secs(1));
@@ -207,17 +155,14 @@ fn concurrent_starts_make_one_attempt_and_later_starts_obey_cooldown() {
             let directory = directory.clone();
             let requests = requests.clone();
             thread::spawn(move || {
-                let _ = attempt(
-                    &directory,
-                    "0.1.5-build.7",
-                    TIME,
-                    &Mutex::new(false),
-                    |_, output, _| {
-                        requests.fetch_add(1, Ordering::SeqCst);
-                        thread::sleep(Duration::from_millis(50));
-                        output.write_all(&serde_json::to_vec(&release("v0.1.5-build.7")).unwrap())
-                    },
-                );
+                let _ = attempt(&directory, TIME, &Mutex::new(false), |_, output, _| {
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    thread::sleep(Duration::from_millis(50));
+                    let mut response = release("v0.1.5-build.7");
+                    response["assets"][0]["digest"] =
+                        json!(digest(&directory.join("mcp-lazy-proxy.exe")).unwrap());
+                    output.write_all(&serde_json::to_vec(&response).unwrap())
+                });
             })
         })
         .collect();
@@ -225,13 +170,9 @@ fn concurrent_starts_make_one_attempt_and_later_starts_obey_cooldown() {
         thread.join().unwrap();
     }
     assert_eq!(requests.load(Ordering::SeqCst), 1);
-    attempt(
-        &directory,
-        "0.1.5-build.7",
-        TIME + 599,
-        &Mutex::new(false),
-        |_, _, _| panic!("cooldown was renewed incorrectly"),
-    )
+    attempt(&directory, TIME + 599, &Mutex::new(false), |_, _, _| {
+        panic!("cooldown was renewed incorrectly")
+    })
     .unwrap();
     assert_eq!(state(&directory)["lastCheckedAtUnix"], TIME);
 }
@@ -240,20 +181,14 @@ fn concurrent_starts_make_one_attempt_and_later_starts_obey_cooldown() {
 fn partial_download_failure_keeps_the_old_image_and_records_the_attempt() {
     let directory = directory();
     assert!(
-        attempt(
-            &directory,
-            "0.1.5",
-            TIME,
-            &Mutex::new(false),
-            |url, output, _| {
-                if url == API {
-                    output.write_all(&serde_json::to_vec(&release("v0.1.6-build.1")).unwrap())
-                } else {
-                    output.write_all(b"partial")?;
-                    Err(io::Error::other("connection lost"))
-                }
+        attempt(&directory, TIME, &Mutex::new(false), |url, output, _| {
+            if url == API {
+                output.write_all(&serde_json::to_vec(&release("v0.1.6-build.1")).unwrap())
+            } else {
+                output.write_all(b"partial")?;
+                Err(io::Error::other("connection lost"))
             }
-        )
+        })
         .is_err()
     );
     assert_eq!(
@@ -280,19 +215,13 @@ fn normal_exit_cancels_before_swap_and_locked_target_is_left_untouched() {
                     .unwrap(),
             )
         };
-        let result = attempt(
-            &directory,
-            "0.1.5",
-            TIME,
-            &Mutex::new(cancel),
-            |url, output, _| {
-                if url == API {
-                    output.write_all(&serde_json::to_vec(&release("v0.1.6-build.1")).unwrap())
-                } else {
-                    output.write_all(b"new-image")
-                }
-            },
-        );
+        let result = attempt(&directory, TIME, &Mutex::new(cancel), |url, output, _| {
+            if url == API {
+                output.write_all(&serde_json::to_vec(&release("v0.1.6-build.1")).unwrap())
+            } else {
+                output.write_all(b"new-image")
+            }
+        });
         assert_eq!(result.is_ok(), cancel);
         drop(held);
         assert_eq!(
@@ -308,7 +237,7 @@ fn invalid_release_response_preserves_the_image() {
     for response in [b"invalid JSON".to_vec(),serde_json::to_vec(&json!({"tag_name":"v0.1.6","assets":[]})).unwrap(),
         serde_json::to_vec(&json!({"tag_name":"v0.1.6","assets":[{"name":"mcp-lazy-proxy.exe","browser_download_url":"https://example.com/program.exe"}]})).unwrap()] {
         let directory=directory();
-        assert!(attempt(&directory,"0.1.5",TIME,&Mutex::new(false),|url,output,_|{assert_eq!(url,API);output.write_all(&response)}).is_err());
+        assert!(attempt(&directory,TIME,&Mutex::new(false),|url,output,_|{assert_eq!(url,API);output.write_all(&response)}).is_err());
         assert_eq!(fs::read(directory.join("mcp-lazy-proxy.exe")).unwrap(),b"old-image");no_staging(&directory);
     }
 }
@@ -356,7 +285,7 @@ fn dropping_the_startup_guard_waits_only_for_the_swap_section() {
     let (resume_tx, resume_rx) = std::sync::mpsc::channel();
     let worker_dir = directory.clone();
     let worker = thread::spawn(move || {
-        attempt(&worker_dir, "0.1.5", TIME, &flag, |url, output, _| {
+        attempt(&worker_dir, TIME, &flag, |url, output, _| {
             if url == API {
                 output.write_all(&serde_json::to_vec(&release("v0.1.6-build.1")).unwrap())
             } else {
@@ -386,10 +315,88 @@ fn live_github_update() {
     let mut saved = state(&directory);
     saved["tag"] = json!("v0.0.0");
     save(&directory, &saved).unwrap();
-    attempt(&directory, "0.0.0", TIME, &Mutex::new(false), http::get).unwrap();
-    assert!(version(state(&directory)["tag"].as_str().unwrap()) > version("0.0.0"));
+    attempt(&directory, TIME, &Mutex::new(false), http::get).unwrap();
+    assert!(state(&directory)["tag"].as_str().unwrap().starts_with('v'));
     let file = fs::read(directory.join("mcp-lazy-proxy.exe")).unwrap();
     assert!(file.len() > 100_000);
     assert!(file.starts_with(b"MZ"));
+    no_staging(&directory);
+}
+
+#[test]
+fn local_update_uses_digest_without_network_and_preserves_settings() {
+    let directory = directory();
+    let source = directory.join("local-build.exe");
+    fs::write(&source, b"local-image").unwrap();
+    let mut record = state(&directory);
+    record["updatePath"] = json!(source);
+    record["installedAtUnix"] = json!(TIME);
+    record["lastCheckedAtUnix"] = json!(TIME);
+    save(&directory, &record).unwrap();
+    attempt(&directory, TIME, &Mutex::new(false), |_, _, _| {
+        panic!("local mode must not use network")
+    })
+    .unwrap();
+    assert_eq!(
+        fs::read(directory.join("mcp-lazy-proxy.exe")).unwrap(),
+        b"local-image"
+    );
+    assert_eq!(state(&directory)["updatePath"], record["updatePath"]);
+    let mut record = state(&directory);
+    record["installedAtUnix"] = json!(TIME - 1000);
+    record["lastCheckedAtUnix"] = json!(0);
+    save(&directory, &record).unwrap();
+    let before = fs::read_dir(&directory).unwrap().count();
+    attempt(&directory, TIME, &Mutex::new(false), |_, _, _| {
+        panic!("no network")
+    })
+    .unwrap();
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), before);
+}
+
+#[test]
+fn broken_local_update_never_falls_back_to_github() {
+    for path in [
+        "relative.exe".to_string(),
+        directory()
+            .join("missing.exe")
+            .to_string_lossy()
+            .into_owned(),
+    ] {
+        let directory = directory();
+        let mut record = state(&directory);
+        record["updatePath"] = json!(path);
+        save(&directory, &record).unwrap();
+        assert!(
+            attempt(&directory, TIME, &Mutex::new(false), |_, _, _| panic!(
+                "no network"
+            ))
+            .is_err()
+        );
+        assert_eq!(
+            fs::read(directory.join("mcp-lazy-proxy.exe")).unwrap(),
+            b"old-image"
+        );
+        no_staging(&directory);
+    }
+}
+
+#[test]
+fn mismatched_asset_digest_preserves_installed_image() {
+    let directory = directory();
+    assert!(
+        attempt(&directory, TIME, &Mutex::new(false), |url, output, _| {
+            if url == API {
+                output.write_all(&serde_json::to_vec(&release("v0.1.5")).unwrap())
+            } else {
+                output.write_all(b"unexpected-image")
+            }
+        })
+        .is_err()
+    );
+    assert_eq!(
+        fs::read(directory.join("mcp-lazy-proxy.exe")).unwrap(),
+        b"old-image"
+    );
     no_staging(&directory);
 }

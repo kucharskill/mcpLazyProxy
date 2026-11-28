@@ -3,6 +3,7 @@ mod http;
 mod tests;
 use crate::install_cleanup;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -35,13 +36,9 @@ pub fn start() -> Option<Guard> {
     std::thread::Builder::new()
         .name("mcp-update".into())
         .spawn(move || {
-            let _ = attempt(
-                &directory,
-                crate::config::VERSION,
-                now(),
-                &cancel,
-                |url, output, limit| http::get(url, output, limit),
-            );
+            let _ = attempt(&directory, now(), &cancel, |url, output, limit| {
+                http::get(url, output, limit)
+            });
         })
         .ok()?;
     Some(Guard(stopped))
@@ -53,23 +50,8 @@ fn now() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
-fn version(tag: &str) -> Option<[u64; 4]> {
-    let tag = tag.strip_prefix('v').unwrap_or(tag);
-    let (base, build) = match tag.split_once("-build.") {
-        Some((base, n)) => (base, n.parse().ok()?),
-        None => (tag, 0),
-    };
-    let mut parts = base.split('.');
-    let result = [
-        parts.next()?.parse().ok()?,
-        parts.next()?.parse().ok()?,
-        parts.next()?.parse().ok()?,
-        build,
-    ];
-    if parts.next().is_some() {
-        return None;
-    }
-    Some(result)
+fn digest(path: &Path) -> io::Result<String> {
+    Ok(format!("sha256:{:x}", Sha256::digest(fs::read(path)?)))
 }
 fn state(directory: &Path) -> Value {
     fs::read(directory.join(STATE))
@@ -82,6 +64,9 @@ fn save(directory: &Path, state: &Value) -> io::Result<()> {
     fs::write(directory.join(STATE), serde_json::to_vec(state)?)
 }
 fn eligible(directory: &Path, state: &Value, now: u64) -> bool {
+    if state.get("updatePath").is_some() {
+        return true;
+    }
     let installed = state["installedAtUnix"].as_u64().or_else(|| {
         fs::metadata(directory.join("mcp-lazy-proxy.exe"))
             .ok()?
@@ -105,7 +90,6 @@ impl Drop for Incoming {
 
 fn attempt(
     directory: &Path,
-    current: &str,
     time: u64,
     stopped: &Mutex<bool>,
     mut get: impl FnMut(&str, &mut dyn io::Write, usize) -> io::Result<()>,
@@ -121,22 +105,39 @@ fn attempt(
     }
     state["lastCheckedAtUnix"] = json!(time);
     save(directory, &state)?;
+    if let Some(path) = state.get("updatePath").cloned() {
+        let source = PathBuf::from(
+            path.as_str()
+                .ok_or_else(|| io::Error::other("invalid updatePath"))?,
+        );
+        if !source.is_absolute() {
+            return Err(io::Error::other("updatePath must be absolute"));
+        }
+        let metadata = fs::metadata(&source)?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 32 * 1024 * 1024 {
+            return Err(io::Error::other("invalid local update file"));
+        }
+        let source_digest = digest(&source)?;
+        if source_digest == digest(&directory.join("mcp-lazy-proxy.exe"))? {
+            return Ok(());
+        }
+        let (id, incoming) = staging(directory);
+        fs::copy(&source, &incoming.0)?;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&incoming.0)?
+            .sync_all()?;
+        if digest(&incoming.0)? != source_digest {
+            return Err(io::Error::other("local update changed during copy"));
+        }
+        return replace(directory, incoming, &id, &mut state, stopped);
+    }
     let mut bytes = Vec::new();
     get(API, &mut bytes, 2 * 1024 * 1024)?;
     let release: Value = serde_json::from_slice(&bytes)?;
     let tag = release["tag_name"]
         .as_str()
         .ok_or_else(|| io::Error::other("missing release version"))?;
-    let newest = version(tag).ok_or_else(|| io::Error::other("unsupported release version"))?;
-    let current = version(current).ok_or_else(|| io::Error::other("missing local version"))?;
-    let installed = state["tag"]
-        .as_str()
-        .and_then(version)
-        .unwrap_or(current)
-        .max(current);
-    if newest <= installed {
-        return Ok(());
-    }
     let assets = release["assets"]
         .as_array()
         .ok_or_else(|| io::Error::other("missing release assets"))?;
@@ -149,12 +150,42 @@ fn attempt(
     if assets.next().is_some() {
         return Err(io::Error::other("ambiguous executable"));
     }
+    let expected = asset["digest"]
+        .as_str()
+        .filter(|value| {
+            value
+                .strip_prefix("sha256:")
+                .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        })
+        .ok_or_else(|| io::Error::other("missing asset SHA-256"))?
+        .to_ascii_lowercase();
+    if expected == digest(&directory.join("mcp-lazy-proxy.exe"))? {
+        return Ok(());
+    }
     let url = asset["browser_download_url"]
         .as_str()
         .ok_or_else(|| io::Error::other("missing download URL"))?;
     if !url.starts_with("https://github.com/kucharskill/mcpLazyProxy/releases/download/") {
         return Err(io::Error::other("unexpected release URL"));
     }
+    let (id, incoming) = staging(directory);
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&incoming.0)?;
+        get(url, &mut file, 32 * 1024 * 1024)?;
+        file.sync_all()?;
+    }
+    if digest(&incoming.0)? != expected {
+        return Err(io::Error::other("asset SHA-256 mismatch"));
+    }
+    state["tag"] = json!(tag);
+    state["releaseId"] = release["id"].clone();
+    replace(directory, incoming, &id, &mut state, stopped)
+}
+
+fn staging(directory: &Path) -> (String, Incoming) {
     let id = format!(
         "{:032x}",
         (SystemTime::now()
@@ -165,14 +196,16 @@ fn attempt(
             | u128::from(std::process::id())
     );
     let incoming = Incoming(directory.join(format!("mcp-lazy-proxy.new-{id}.exe")));
-    {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&incoming.0)?;
-        get(url, &mut file, 32 * 1024 * 1024)?;
-        file.sync_all()?;
-    }
+    (id, incoming)
+}
+
+fn replace(
+    directory: &Path,
+    incoming: Incoming,
+    id: &str,
+    state: &mut Value,
+    stopped: &Mutex<bool>,
+) -> io::Result<()> {
     let cancelled = stopped
         .lock()
         .map_err(|_| io::Error::other("updater stopped"))?;
@@ -186,9 +219,7 @@ fn attempt(
         let _ = fs::rename(&backup, &target);
         return Err(error);
     }
-    state["tag"] = json!(tag);
-    state["releaseId"] = release["id"].clone();
     state["installedAtUnix"] = json!(now());
-    save(directory, &state)?;
+    save(directory, state)?;
     Ok(())
 }
