@@ -131,7 +131,12 @@ Rust and Tokio handle the proxy and asynchronous I/O. `process-wrap` supplies pr
 
 ## Process control diagnostics
 
-Each proxy publishes a small control directory under its cache directory:
+Diagnostics are disabled by default. Set `"debugMode": true` in the
+`installed-release.json` beside the EXE to enable them on subsequent process starts.
+Set it to `false` to disable them again. Isolated test processes can override this
+with `MCP_LAZY_DIAGNOSTICS=1` (enable) or `0` (disable).
+
+An enabled proxy publishes a small control directory under its cache directory:
 `OS_TEMP/mcp-lazy-proxy/diagnostics/<pid>-<start-token>/`. The separate diagnostics
 module checks for a command once per second using the existing event loop, with
 no extra thread or network listener. Startup tokens distinguish reused PIDs.
@@ -152,8 +157,8 @@ Use the repository's PowerShell helper to select one running proxy:
 `exit` closes the proxy with code 0; `fail` closes it with code 1 to test client
 recovery. Lifecycle commands wait for outstanding MCP requests to finish. Status
 is sampled when requested. Pass `-CacheDirectory` when the proxy uses a custom
-cache path. After installing this version, newly started proxies expose control
-automatically with the existing client configuration.
+cache path. Newly started proxies expose control when debugMode is enabled; the client
+configuration stays unchanged.
 
 
 For local development, add an absolute `updatePath` to the installed

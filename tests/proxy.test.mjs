@@ -15,7 +15,7 @@ async function records(dir){try{return (await readFile(join(dir,'events.jsonl'),
 async function until(fn,message='condition',ms=5000){const end=Date.now()+ms;while(Date.now()<end){if(await fn())return;await delay(25);}throw Error('timeout: '+message);}
 function alive(pid){try{process.kill(pid,0);return true;}catch{return false;}}
 function connect(dir,{env={},extra=[],mode='server',executable=binary}={}){
-  const child=spawn(executable,['--cache-dir',join(dir,'cache'),'--idle-ms','500','--discovery-idle-ms','120','--shutdown-ms','100',...extra,'--',process.execPath,fixture,join(dir,'events.jsonl'),mode],{env:{...process.env,...env},windowsHide:true});
+  const child=spawn(executable,['--cache-dir',join(dir,'cache'),'--idle-ms','500','--discovery-idle-ms','120','--shutdown-ms','100',...extra,'--',process.execPath,fixture,join(dir,'events.jsonl'),mode],{env:{...process.env,MCP_LAZY_DIAGNOSTICS:'1',...env},windowsHide:true});
   let sequence=0,stderr='',messages=[],pending=new Map();
   child.stderr.on('data',data=>stderr+=data); child.on('error',()=>{});
   const send=m=>child.stdin.write(JSON.stringify({jsonrpc:'2.0',...m})+'\n');
@@ -284,4 +284,25 @@ test('diagnostic bridge injects JSON, captures both peers and resumes held clien
     await command({op:'sendToClient',message:{jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'diagnostic-test'}}});
     await until(()=>p.messages.some(m=>m.params?.data==='diagnostic-test'));
   }finally{await p.close();}
+});
+
+
+test('disabled diagnostics leaves no control directory and normal MCP still works',async()=>{
+  const dir=await workspace(),p=connect(dir,{env:{MCP_LAZY_DIAGNOSTICS:'0'}});
+  try{assert.deepEqual((await p.request('ping')).result,{});await assert.rejects(access(join(dir,'cache','diagnostics')));}
+  finally{await p.close();}
+});
+
+
+test('adjacent debugMode toggles diagnostics without changing client arguments',async()=>{
+  const dir=await workspace(),installed=join(dir,'mcp-lazy-proxy.exe');await copyFile(binary,installed);
+  for(const enabled of [false,true]){
+    await writeFile(join(dir,'installed-release.json'),JSON.stringify({debugMode:enabled}));
+    const p=connect(dir,{executable:installed,env:{MCP_LAZY_DIAGNOSTICS:undefined}});
+    try{
+      assert.deepEqual((await p.request('ping')).result,{});
+      if(enabled)assert.equal((await readdir(join(dir,'cache','diagnostics'))).length,1);
+      else await assert.rejects(access(join(dir,'cache','diagnostics')));
+    }finally{await p.close();}
+  }
 });

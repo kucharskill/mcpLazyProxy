@@ -28,6 +28,20 @@ pub struct Control {
 }
 impl Control {
     pub fn open(root: &Path) -> io::Result<Self> {
+        // The environment override is useful for isolated test processes.
+        let enabled = std::env::var("MCP_LAZY_DIAGNOSTICS")
+            .ok()
+            .map(|v| v == "1")
+            .unwrap_or_else(|| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|p| fs::read(p.parent()?.join("installed-release.json")).ok())
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .is_some_and(|state| state["debugMode"] == true)
+            });
+        if !enabled {
+            return Err(io::Error::other("diagnostics disabled"));
+        }
         fs::create_dir_all(root)?;
         let token = SystemTime::now()
             .duration_since(UNIX_EPOCH)
