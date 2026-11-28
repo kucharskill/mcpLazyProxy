@@ -55,8 +55,16 @@ impl Backend {
             .ok_or_else(|| io::Error::other("backend stderr missing"))?;
         let stderr_events = events.clone();
         let stderr_reader = tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            let mut reader = BufReader::new(stderr);
+            let mut bytes = Vec::new();
+            while let Ok(count) = reader.read_until(b'\n', &mut bytes).await {
+                if count == 0 {
+                    break;
+                }
+                let line = String::from_utf8_lossy(&bytes)
+                    .trim_end_matches(['\r', '\n'])
+                    .to_owned();
+                bytes.clear();
                 if stderr_events
                     .send(Event::Stderr(generation, line))
                     .await

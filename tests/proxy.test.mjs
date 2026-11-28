@@ -321,6 +321,7 @@ test('append-only process log contains startup env, wire directions, idle shutdo
   for(const direction of ['client-to-proxy','proxy-to-client','backend-to-proxy','proxy-to-backend'])assert.ok(directions.has(direction),direction);
   assert.ok(log.some(e=>e.kind==='idle_deadline_changed'));
   assert.ok(log.some(e=>e.kind==='backend_stderr'&&e.data.line.startsWith('fixture diagnostic')));
+  assert.ok(log.some(e=>e.kind==='backend_stderr'&&e.data.line.includes('\ufffd')));
 });
 
 

@@ -14,6 +14,7 @@ else if(mode==='child') {
   const rl=createInterface({input:process.stdin});
   rl.on('line',line=>{
     const m=JSON.parse(line); record(m.method||'response', {id:m.id});
+    if(mode==='logging'&&m.method==='initialize')process.stderr.write(Buffer.from([255,10]));
     if(mode==='logging')process.stderr.write('fixture diagnostic '+(m.method||'response')+'\n');
     if(m.method==='initialize') {
       out({id:m.id,result:{protocolVersion:m.params.protocolVersion, capabilities:{tools:{listChanged:true}},serverInfo:{name:'fixture',version:'1'},_meta:{ttlMs:0,opaque:[1,2]}}});
