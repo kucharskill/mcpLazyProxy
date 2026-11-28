@@ -12,12 +12,14 @@ use tokio::{
 pub enum Event {
     Line(u64, String),
     Closed(u64),
+    Stderr(u64, String),
     ParentGone,
 }
 pub struct Backend {
     pub child: Box<dyn ChildWrapper>,
     pub input: Option<ChildStdin>,
     reader: JoinHandle<()>,
+    stderr_reader: JoinHandle<()>,
 }
 impl Backend {
     pub fn spawn(
@@ -30,7 +32,7 @@ impl Backend {
                 .args(&config.command[1..])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::inherit());
+                .stderr(Stdio::piped());
         });
         command.wrap(KillOnDrop);
         #[cfg(windows)]
@@ -47,6 +49,23 @@ impl Backend {
             .stdout()
             .take()
             .ok_or_else(|| io::Error::other("backend stdout missing"))?;
+        let stderr = child
+            .stderr()
+            .take()
+            .ok_or_else(|| io::Error::other("backend stderr missing"))?;
+        let stderr_events = events.clone();
+        let stderr_reader = tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if stderr_events
+                    .send(Event::Stderr(generation, line))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
         eprintln!("mcp-lazy: backend started pid={:?}", child.id());
         let reader = tokio::spawn(async move {
             let mut lines = BufReader::new(output).lines();
@@ -61,6 +80,7 @@ impl Backend {
             child,
             input,
             reader,
+            stderr_reader,
         })
     }
     pub async fn send(&mut self, value: &serde_json::Value) -> io::Result<()> {
@@ -81,12 +101,14 @@ impl Backend {
             let _ = timeout(grace, self.child.wait()).await;
         }
         self.reader.abort();
+        self.stderr_reader.abort();
         eprintln!("mcp-lazy: backend stopped");
     }
 }
 impl Drop for Backend {
     fn drop(&mut self) {
         self.reader.abort();
+        self.stderr_reader.abort();
         let _ = self.child.start_kill();
     }
 }

@@ -212,7 +212,7 @@ impl crate::Proxy {
             self.diagnostic_send(action).await;
         }
         if matches!(lifecycle, Some(Command::StopBackend)) {
-            self.stop().await;
+            self.stop("diagnostic_stop").await;
             return None;
         }
         lifecycle

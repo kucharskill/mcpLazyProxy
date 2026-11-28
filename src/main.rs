@@ -5,6 +5,7 @@ mod cache;
 mod config;
 mod diagnostics;
 mod install_cleanup;
+mod logging;
 #[cfg(windows)]
 mod update;
 
@@ -44,12 +45,17 @@ struct Proxy {
     expires: Instant,
     output: tokio::io::Stdout,
     diagnostics: Option<diagnostics::Control>,
+    log: Option<logging::Log>,
 }
 impl Proxy {
     async fn out(&mut self, message: &Value) -> io::Result<()> {
         self.diagnostic_observe("client-out", message);
         let mut data = serde_json::to_vec(message)?;
         data.push(b'\n');
+        self.log_wire(
+            "proxy-to-client",
+            std::str::from_utf8(&data[..data.len() - 1]).unwrap_or(""),
+        );
         self.output.write_all(&data).await?;
         self.output.flush().await
     }
@@ -60,6 +66,7 @@ impl Proxy {
     fn touch(&mut self, method: &str) {
         if !discovery(method) {
             self.expires = self.expires.max(Instant::now() + self.config.idle);
+            self.log_deadline(method);
         }
     }
     async fn start(&mut self, replay: bool) -> io::Result<()> {
@@ -70,6 +77,7 @@ impl Proxy {
             self.generation,
             self.events.clone(),
         )?);
+        self.log_event("backend_started", json!({"generation":self.generation,"backendPid":self.backend.as_ref().and_then(|b|b.child.id())}));
         self.expires = Instant::now();
         if replay && !self.initialize.is_null() {
             let id = format!("lazy-init-{}", self.generation);
@@ -83,6 +91,7 @@ impl Proxy {
     }
     async fn send(&mut self, message: &Value) -> io::Result<()> {
         self.diagnostic_observe("backend-out", message);
+        self.log_wire("proxy-to-backend", &serde_json::to_string(message)?);
         self.backend
             .as_mut()
             .ok_or_else(|| io::Error::other("backend unavailable"))?
@@ -169,11 +178,13 @@ impl Proxy {
         if self.backend.is_none() && cacheable(&method) {
             if let Some(result) = self.cache.get(&key) {
                 eprintln!("mcp-lazy: cache hit {method}");
+                self.log_event("cache_hit", json!({"method":method,"key":key}));
                 return self
                     .out(&json!({"jsonrpc":"2.0","id":id,"result":result}))
                     .await;
             }
             eprintln!("mcp-lazy: cache miss {method}");
+            self.log_event("cache_miss", json!({"method":method,"key":key}));
         }
         if self.pending.len() + self.queue.len() >= 256 {
             return self
@@ -186,7 +197,7 @@ impl Proxy {
                 .await
                 .is_err()
         {
-            self.stop().await;
+            self.stop("start_failed").await;
             return self
                 .error(
                     id,
@@ -248,11 +259,16 @@ impl Proxy {
         }
         self.out(&message).await
     }
-    async fn stop(&mut self) {
+    async fn stop(&mut self, reason: &str) {
         self.handshake = None;
         self.server_pending.clear();
         if let Some(mut backend) = self.backend.take() {
+            self.log_event("backend_stopping", json!({"reason":reason,"generation":self.generation,"backendPid":backend.child.id()}));
             backend.stop(self.config.shutdown).await;
+            self.log_event(
+                "backend_stopped",
+                json!({"reason":reason,"generation":self.generation}),
+            );
         }
     }
     async fn stop_discovery(&mut self) {
@@ -263,11 +279,11 @@ impl Proxy {
             && self.server_pending.is_empty()
             && self.handshake.is_none()
         {
-            self.stop().await;
+            self.stop("discovery_complete").await;
         }
     }
     async fn fail(&mut self, reason: &str) -> io::Result<()> {
-        self.stop().await;
+        self.stop(reason).await;
         for (_, pending) in std::mem::take(&mut self.pending) {
             self.error(pending.id, -32000, reason).await?;
         }
@@ -296,6 +312,7 @@ async fn termination() -> io::Result<()> {
 async fn run(config: Config) -> io::Result<()> {
     let (tx, mut rx) = mpsc::channel(256);
     backend::watch_parent(tx.clone())?;
+    let log = logging::Log::open().ok();
     let diagnostics = diagnostics::Control::open(&config.cache_dir.join("diagnostics")).ok();
     let mut proxy = Proxy {
         cache: Cache::new(&config),
@@ -314,23 +331,29 @@ async fn run(config: Config) -> io::Result<()> {
         expires: Instant::now(),
         output: tokio::io::stdout(),
         diagnostics,
+        log,
     };
+    proxy.log_start();
     let mut input = BufReader::new(tokio::io::stdin()).lines();
     let mut tick = interval(Duration::from_millis(50));
     let interrupt = termination();
     tokio::pin!(interrupt);
     let result = loop {
         let action: io::Result<bool> = tokio::select! {
-            line = input.next_line() => match line {
+            line = input.next_line() => {
+                if let Ok(Some(ref raw))=line {proxy.log_wire("client-to-proxy",raw);}
+                match line {
                 Ok(Some(line)) if line.trim().is_empty() => Ok(true),
                 Ok(Some(line)) => match serde_json::from_str::<Value>(&line) {
                     Ok(message) if message.is_object() && message["jsonrpc"] == "2.0" => proxy.client(message).await.map(|_| true),
                     _ => proxy.error(Value::Null, -32700, "Expected a JSON-RPC 2.0 object").await.map(|_| true),
                 },
                 Ok(None) => Ok(false), Err(e) => Err(e),
+                }
             },
             Some(event) = rx.recv() => match event {
                 Event::Line(generation, line) if generation == proxy.generation && proxy.backend.is_some() => {
+                    proxy.log_wire("backend-to-proxy", &line);
                     if line.trim().is_empty() { Ok(true) } else {
                         match serde_json::from_str::<Value>(&line) {
                             Ok(message) if message.is_object() && message["jsonrpc"] == "2.0" => proxy.upstream(message).await.map(|_| true),
@@ -341,9 +364,14 @@ async fn run(config: Config) -> io::Result<()> {
                 Event::Closed(generation) if generation == proxy.generation && proxy.backend.is_some() => {
                     proxy.fail("MCP backend exited; request outcome may be unknown; no automatic retry").await.map(|_| true)
                 },
+                Event::Stderr(generation, line) => {
+                    proxy.log_event("backend_stderr",json!({"generation":generation,"line":line}));
+                    eprintln!("{line}"); Ok(true)
+                },
                 Event::ParentGone => Ok(false), _ => Ok(true),
             },
             _ = tick.tick() => {
+                proxy.log_idle_deferred();
                 if proxy.handshake.as_ref().is_some_and(|(_, deadline)| Instant::now() >= *deadline)
                     || proxy.pending.values().any(|p| p.method == "initialize" && p.started.elapsed() >= INITIALIZE_TIMEOUT) {
                     proxy.fail("MCP backend initialization timed out").await.map(|_| true)
@@ -353,7 +381,7 @@ async fn run(config: Config) -> io::Result<()> {
                 } else {
                     if !proxy.config.idle.is_zero() && proxy.backend.is_some() && proxy.pending.is_empty() && proxy.queue.is_empty()
                         && proxy.server_pending.is_empty() && proxy.handshake.is_none() && Instant::now() >= proxy.expires {
-                        proxy.stop().await;
+                        proxy.stop("idle_timeout").await;
                     }
                     Ok(true)
                 }
@@ -371,7 +399,11 @@ async fn run(config: Config) -> io::Result<()> {
             Err(e) => break Err(e),
         }
     };
-    proxy.stop().await;
+    proxy.stop("proxy_exit").await;
+    proxy.log_event(
+        "proxy_exited",
+        json!({"error":result.as_ref().err().map(|e|e.to_string())}),
+    );
     result
 }
 

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {spawn,spawnSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {mkdir,readFile,mkdtemp,copyFile,rename,writeFile,access,readdir} from 'node:fs/promises';
-import {resolve,join} from 'node:path';
+import {resolve,join,basename,extname} from 'node:path';
+import {tmpdir} from 'node:os';
 import {setTimeout as delay} from 'node:timers/promises';
 
 const binary=resolve(process.env.LAZY_BINARY||'target/debug/mcp-lazy-proxy.exe');
@@ -305,4 +306,26 @@ test('adjacent debug toggles diagnostics without changing client arguments',asyn
       else await assert.rejects(access(join(dir,'cache','diagnostics')));
     }finally{await p.close();}
   }
+});
+
+
+test('append-only process log contains startup env, wire directions, idle shutdown and exit',async()=>{
+  const dir=await workspace(),marker='startup-env-probe',p=connect(dir,{mode:'logging',env:{LAZY_LOG_TEST:marker,MCP_LAZY_DIAGNOSTICS:'0'}});
+  const proxyPid=p.child.pid,logRoot=join(tmpdir(),basename(binary,extname(binary)));
+  const entries=async()=>{const [name]=(await readdir(logRoot)).filter(n=>n.startsWith(proxyPid+'_')).sort().reverse();if(!name)return [];return (await readFile(join(logRoot,name),'utf8')).trim().split('\n').map(JSON.parse)};
+  try{await p.init();await call(p,'echo');await until(async()=> (await entries()).some(e=>e.kind==='backend_stopped'&&e.data.reason==='idle_timeout'),'idle shutdown logged');}
+  finally{await p.close();}
+  const [name]=(await readdir(logRoot)).filter(n=>n.startsWith(proxyPid+'_')).sort().reverse();assert.match(name,new RegExp('^'+proxyPid+'_\\d{14}\\.jsonl$'));
+  const log=await entries();assert.equal(log[0].kind,'proxy_started');assert.equal(log[0].data.environment.LAZY_LOG_TEST,marker);assert.ok(log[0].data.arguments.includes(fixture));assert.equal(log.at(-1).kind,'proxy_exited');
+  const directions=new Set(log.filter(e=>e.kind==='stdio').map(e=>e.data.direction));
+  for(const direction of ['client-to-proxy','proxy-to-client','backend-to-proxy','proxy-to-backend'])assert.ok(directions.has(direction),direction);
+  assert.ok(log.some(e=>e.kind==='idle_deadline_changed'));
+  assert.ok(log.some(e=>e.kind==='backend_stderr'&&e.data.line.startsWith('fixture diagnostic')));
+});
+
+
+test('unwritable log directory leaves MCP available',async()=>{
+  const dir=await workspace();await writeFile(join(dir,basename(binary,extname(binary))),'blocked');
+  const p=connect(dir,{env:{TEMP:dir,TMP:dir}});
+  try{assert.deepEqual((await p.request('ping')).result,{});}finally{await p.close();}
 });

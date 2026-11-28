@@ -207,3 +207,16 @@ extension with `.json`: `mcp-lazy-proxy.exe` reads `mcp-lazy-proxy.json`.
 The optional `debug` field enables diagnostics only when it is `true`.
 Update attempts leave the JSON unchanged.
 The installer preserves `debug` and `updatePath` when replacing the executable.
+
+
+## Process logs
+
+Each process appends to `OS_TEMP/<executable-stem>/<pid>_<YYYYMMDDHHmmss>.jsonl`.
+Windows filenames use local time; entries include Unix milliseconds and the PID.
+The first entry records startup arguments, the working directory and the complete
+inherited environment. Subsequent entries record raw MCP lines in both directions
+on both connections, backend stderr, backend lifecycle and idle deadlines. Logging
+runs independently of the optional diagnostics bridge. JSONL is written through a
+fixed 8 KiB buffer and flushed after each entry; the process never loads its log
+history. Files remain available after exit. A file-write failure disables logging
+for that process while MCP continues running.
